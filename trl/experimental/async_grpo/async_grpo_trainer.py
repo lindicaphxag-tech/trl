@@ -239,8 +239,8 @@ class _EpochStopCallback(TrainerCallback):
     An epoch is counted in distinct prompt-groups actually trained (accumulated in the collator, which runs on the main
     process just before the model forward). This is fork-independent: all generations of a prompt and all forked rows
     of a conversation share one `group_id`, so a conversation forking into many rows still counts once. Only the main
-    process collates (`dispatch_batches=True`), so the stop decision is reduced across ranks to keep data-parallel
-    workers in lockstep.
+    process collates (`dispatch_batches=True`), so the trained-group count is gathered across ranks and used for both
+    `state.epoch` and the stop decision.
     """
 
     def __init__(self, trainer: "AsyncGRPOTrainer", target_groups: int, num_prompts: int):
