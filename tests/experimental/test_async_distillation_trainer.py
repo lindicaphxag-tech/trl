@@ -900,25 +900,29 @@ class TestEpochStop:
     """
 
     @pytest.mark.parametrize(
-        ("trained", "before_resume", "should_stop"),
+        ("trained", "before_resume", "expected_epoch", "should_stop"),
         [
-            ({0, 1, 2}, 0, False),
-            ({0, 1, 2, 3}, 0, True),
-            ({0, 1}, 2, True),  # a resumed run reaches the target counting the checkpoint's prompts
-            (set(), 4, True),  # ... and reaches it having trained nothing of its own
+            ({0, 1, 2}, 0, 0.75, False),
+            ({0, 1, 2, 3}, 0, 1.0, True),
+            ({0, 1}, 2, 1.0, True),  # a resumed run reaches the target counting the checkpoint's prompts
+            (set(), 4, 1.0, True),  # ... and reaches it having trained nothing of its own
         ],
     )
-    def test_stops_once_the_prompt_target_is_reached(self, trained, before_resume, should_stop):
+    def test_updates_epoch_and_stops_once_the_prompt_target_is_reached(
+        self, trained, before_resume, expected_epoch, should_stop
+    ):
         trainer = types.SimpleNamespace(
-            # Single process, so the cross-rank reduce is the identity.
-            accelerator=types.SimpleNamespace(device="cpu", reduce=lambda tensor, reduction: tensor),
+            # Single process, so gathering the count is the identity.
+            accelerator=types.SimpleNamespace(device="cpu", gather=lambda tensor: tensor),
             _trained_prompts=trained,
             _prompts_before_resume=before_resume,
         )
+        state = types.SimpleNamespace(epoch=0.0)
         control = types.SimpleNamespace(should_training_stop=False)
 
-        _EpochStopCallback(trainer, target_prompts=4).on_step_end(None, None, control)
+        _EpochStopCallback(trainer, target_prompts=4, num_prompts=4).on_step_end(None, state, control)
 
+        assert state.epoch == pytest.approx(expected_epoch)
         assert control.should_training_stop is should_stop
 
 
