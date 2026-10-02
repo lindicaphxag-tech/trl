@@ -193,6 +193,15 @@ class TestPackingAwareBatching:
             assert all(len(group) > 0 for group in groups)
             assert sum(len(group) for group in groups) == 4
 
+    def test_accumulation_window_counts_completion_tokens_across_microbatches(self):
+        trainer = object.__new__(AsyncDistillationTrainer)
+        batch_a = {"global_n_tokens": torch.tensor([100.0, 100.0])}
+        batch_b = {"global_n_tokens": torch.tensor([900.0, 900.0])}
+
+        total = trainer._get_num_items_in_batch([batch_a, batch_b], torch.device("cpu"))
+
+        assert total.item() == 1000.0
+
     def test_token_budget_batcher_respects_budget_and_fills_every_row(self):
         source = (_rollout_sample(3) for _ in range(100))
         batcher = TokenBudgetBatcher(source, num_processes=2, token_budget=8, metrics=defaultdict(list))

@@ -1235,16 +1235,26 @@ class AsyncDistillationTrainer(_BaseTrainer):
                 "mean_seq_len",
             ]
 
+    def _get_num_items_in_batch(self, batch_samples, device):
+        """Count completion tokens across the full gradient-accumulation window."""
+        if not batch_samples:
+            return None
+        return torch.stack(
+            [batch["global_n_tokens"].reshape(-1)[0].to(device=device, dtype=torch.float32) for batch in batch_samples]
+        ).sum()
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         # Route the whole loss (backbone + `lm_head` projection + JSD) through the DDP/FSDP wrapper via
         # `_forward_redirection`, so DDP.forward() fires `prepare_for_backward()` and FSDP keeps the student's
         # sharded parameters (including the `lm_head`) materialized for the projection. Mirrors
         # `DistillationTrainer.compute_loss`.
         unwrapped_model = self.accelerator.unwrap_model(model)
-        loss = self._forward_redirection(model, unwrapped_model, self._compute_loss, unwrapped_model, inputs)
+        loss = self._forward_redirection(
+            model, unwrapped_model, self._compute_loss, unwrapped_model, inputs, num_items_in_batch
+        )
         return (loss, None) if return_outputs else loss
 
-    def _compute_loss(self, unwrapped_model, inputs):
+    def _compute_loss(self, unwrapped_model, inputs, num_items_in_batch=None):
         # Padding-free: the collator already packed this rank's samples into a single row (real tokens concatenated,
         # `position_ids` resetting per sequence), then padded the row to the longest rank's length so
         # DataLoaderDispatcher could scatter rectangular rows. Strip that trailing inter-rank padding here.
@@ -1380,9 +1390,16 @@ class AsyncDistillationTrainer(_BaseTrainer):
 
         global_n_tokens = inputs["global_n_tokens"][0]
         world_size = self.accelerator.num_processes
-        tokens_per_rank = (global_n_tokens / world_size).clamp(min=1.0)
-        loss = loss / tokens_per_rank.to(torch.float32)
-        loss = loss / self.current_gradient_accumulation_steps
+        # Trainer prefetches the full gradient-accumulation window and passes the same
+        # num_items_in_batch to every micro-batch. Match AsyncGRPOTrainer by normalizing
+        # every local loss sum with the shared window-wide completion-token count.
+        if num_items_in_batch is None:
+            accumulation_scale = self.current_gradient_accumulation_steps if self.model.training else 1
+            normalization_tokens = global_n_tokens * accumulation_scale
+        else:
+            normalization_tokens = torch.as_tensor(num_items_in_batch, device=loss.device, dtype=torch.float32)
+        tokens_per_rank = (normalization_tokens / world_size).clamp(min=1.0)
+        loss = loss / tokens_per_rank
 
         with torch.no_grad():
             local_count = token_mask_1d.sum().float()
