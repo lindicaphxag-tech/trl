@@ -243,15 +243,19 @@ class _EpochStopCallback(TrainerCallback):
     workers in lockstep.
     """
 
-    def __init__(self, trainer: "AsyncGRPOTrainer", target_groups: int):
+    def __init__(self, trainer: "AsyncGRPOTrainer", target_groups: int, num_prompts: int):
         self._trainer = trainer
         self._target = target_groups
+        self._num_prompts = num_prompts
 
-    def on_step_end(self, _args, _state, control, **_kwargs):
+    def on_step_end(self, _args, state, control, **_kwargs):
         acc = self._trainer.accelerator
         trained = self._trainer._groups_before_resume + len(self._trainer._trained_groups)
-        reached = torch.tensor(int(trained >= self._target), device=acc.device)
-        if int(acc.reduce(reached, reduction="sum").item()) >= 1:
+        # Only the main process collates and updates the trained-group set. Gather the count so every rank records
+        # the same epoch and makes the same stop decision.
+        trained = int(acc.gather(torch.tensor([trained], device=acc.device)).max().item())
+        state.epoch = trained / self._num_prompts
+        if trained >= self._target:
             control.should_training_stop = True
 
 
@@ -1367,7 +1371,7 @@ class AsyncGRPOTrainer(_BaseTrainer):
         self.add_callback(StepIntervalCallback(self._sync_weight, self.args.weight_sync_steps))
         self.add_callback(StepIntervalCallback(self._log_step_metrics, 1))
         if self._epoch_stop_groups is not None:
-            self.add_callback(_EpochStopCallback(self, self._epoch_stop_groups))
+            self.add_callback(_EpochStopCallback(self, self._epoch_stop_groups, len(train_dataset)))
 
     def _init_lora_sync(self, model: "PeftModel") -> bool:
         """Probe the server and decide the sync mode. Main process only; the decision itself is [`select_adapter_sync`]."""
