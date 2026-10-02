@@ -1498,9 +1498,8 @@ class TestEpochStop(TrlTestCase):
         forked, _ = self._train(fork_k=3)
 
         # Both stop after num_train_epochs=2 full passes over the prompts, i.e. ~2 x num_prompts distinct
-        # groups, plus at most one micro-batch of overshoot — regardless of the fork rate. (HF's own
-        # state.epoch is meaningless here: it's global_step/max_steps over an infinite IterableDataset,
-        # so we judge epochs by distinct prompt-groups trained, which is what the callback targets.)
+        # groups, plus at most one micro-batch of overshoot — regardless of the fork rate. The epoch callback also
+        # overwrites Trainer's IterableDataset-derived value with this same prompt-group progress.
         for trainer in (no_fork, forked):
             assert 2 * num_prompts <= len(trainer._trained_groups) < 3 * num_prompts
 
