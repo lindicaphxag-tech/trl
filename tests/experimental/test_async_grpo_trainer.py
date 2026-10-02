@@ -1430,6 +1430,31 @@ class TestScoreGroupOptionThree(TrlTestCase):
         assert samples[1].metrics["reward"] == 2.0
 
 
+class TestEpochStopCallback:
+    @pytest.mark.parametrize(
+        ("trained", "before_resume", "expected_epoch", "should_stop"),
+        [
+            ({0, 1, 2}, 0, 0.75, False),
+            ({0, 1, 2, 3}, 0, 1.0, True),
+            ({0, 1}, 2, 1.0, True),
+            (set(), 3, 0.75, False),
+        ],
+    )
+    def test_updates_epoch_and_stops_at_group_target(self, trained, before_resume, expected_epoch, should_stop):
+        trainer = types.SimpleNamespace(
+            accelerator=types.SimpleNamespace(device="cpu", gather=lambda tensor: tensor),
+            _trained_groups=trained,
+            _groups_before_resume=before_resume,
+        )
+        state = types.SimpleNamespace(epoch=0.0)
+        control = types.SimpleNamespace(should_training_stop=False)
+
+        _EpochStopCallback(trainer, target_groups=4, num_prompts=4).on_step_end(None, state, control)
+
+        assert state.epoch == pytest.approx(expected_epoch)
+        assert control.should_training_stop is should_stop
+
+
 @pytest.mark.skipif(
     not is_ampere_or_newer() and torch_device != "xpu",
     reason="Flash Attention 2 requires Ampere or newer GPU, or XPU",
