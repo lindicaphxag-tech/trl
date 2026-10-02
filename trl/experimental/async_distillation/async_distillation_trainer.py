@@ -530,15 +530,17 @@ class _EpochStopCallback(TrainerCallback):
     data-parallel workers in lockstep.
     """
 
-    def __init__(self, trainer: "AsyncDistillationTrainer", target_prompts: int):
+    def __init__(self, trainer: "AsyncDistillationTrainer", target_prompts: int, num_prompts: int):
         self._trainer = trainer
         self._target = target_prompts
+        self._num_prompts = num_prompts
 
-    def on_step_end(self, _args, _state, control, **_kwargs):
+    def on_step_end(self, _args, state, control, **_kwargs):
         acc = self._trainer.accelerator
         trained = self._trainer._prompts_before_resume + len(self._trainer._trained_prompts)
-        reached = torch.tensor(int(trained >= self._target), device=acc.device)
-        if int(acc.reduce(reached, reduction="sum").item()) >= 1:
+        trained = int(acc.gather(torch.tensor([trained], device=acc.device)).max().item())
+        state.epoch = trained / self._num_prompts
+        if trained >= self._target:
             control.should_training_stop = True
 
 
@@ -1166,7 +1168,7 @@ class AsyncDistillationTrainer(_BaseTrainer):
         self.add_callback(StepIntervalCallback(self._sync_weight, self.args.weight_sync_steps))
         self.add_callback(StepIntervalCallback(self._log_step_metrics, 1))
         if self._epoch_stop_prompts is not None:
-            self.add_callback(_EpochStopCallback(self, self._epoch_stop_prompts))
+            self.add_callback(_EpochStopCallback(self, self._epoch_stop_prompts, len(train_dataset)))
 
     def get_train_dataloader(self) -> DataLoader:
         num_processes = self.accelerator.num_processes

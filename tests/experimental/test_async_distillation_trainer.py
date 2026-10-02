@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 from datasets import Dataset, load_dataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, TrainerControl, TrainerState
 from transformers.testing_utils import torch_device
 
 from trl.experimental.async_distillation import AsyncDistillationConfig, AsyncDistillationTrainer
@@ -900,25 +900,27 @@ class TestEpochStop:
     """
 
     @pytest.mark.parametrize(
-        ("trained", "before_resume", "should_stop"),
+        ("trained", "before_resume", "should_stop", "expected_epoch"),
         [
-            ({0, 1, 2}, 0, False),
-            ({0, 1, 2, 3}, 0, True),
-            ({0, 1}, 2, True),  # a resumed run reaches the target counting the checkpoint's prompts
-            (set(), 4, True),  # ... and reaches it having trained nothing of its own
+            ({0, 1, 2}, 0, False, 1.5),
+            ({0, 1, 2, 3}, 0, True, 2.0),
+            ({0, 1}, 2, True, 2.0),  # a resumed run reaches the target counting the checkpoint's prompts
+            (set(), 4, True, 2.0),  # ... and reaches it having trained nothing of its own
         ],
     )
-    def test_stops_once_the_prompt_target_is_reached(self, trained, before_resume, should_stop):
+    def test_stops_once_the_prompt_target_is_reached(self, trained, before_resume, should_stop, expected_epoch):
         trainer = types.SimpleNamespace(
-            # Single process, so the cross-rank reduce is the identity.
-            accelerator=types.SimpleNamespace(device="cpu", reduce=lambda tensor, reduction: tensor),
+            # Single process, so gathering one value returns that value unchanged.
+            accelerator=types.SimpleNamespace(device="cpu", gather=lambda tensor: tensor),
             _trained_prompts=trained,
             _prompts_before_resume=before_resume,
         )
-        control = types.SimpleNamespace(should_training_stop=False)
+        state = TrainerState()
+        control = TrainerControl()
 
-        _EpochStopCallback(trainer, target_prompts=4).on_step_end(None, None, control)
+        _EpochStopCallback(trainer, target_prompts=4, num_prompts=2).on_step_end(None, state, control)
 
+        assert state.epoch == pytest.approx(expected_epoch)
         assert control.should_training_stop is should_stop
 
 
