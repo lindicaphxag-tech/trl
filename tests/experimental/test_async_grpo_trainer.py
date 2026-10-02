@@ -43,6 +43,7 @@ from trl.experimental.async_grpo.async_grpo_trainer import (
     FixedCountBatcher,
     RolloutWorkerProtocol,
     TokenBudgetBatcher,
+    _EpochStopCallback,
     _balance_by_squared_length,
     _iter_vllm_named_params,
     _reduce_metric,
@@ -1441,13 +1442,13 @@ class TestEpochStopCallback:
         ],
     )
     def test_updates_epoch_and_stops_at_group_target(self, trained, before_resume, expected_epoch, should_stop):
-        trainer = types.SimpleNamespace(
-            accelerator=types.SimpleNamespace(device="cpu", gather=lambda tensor: tensor),
+        trainer = SimpleNamespace(
+            accelerator=SimpleNamespace(device="cpu", gather=lambda tensor: tensor),
             _trained_groups=trained,
             _groups_before_resume=before_resume,
         )
-        state = types.SimpleNamespace(epoch=0.0)
-        control = types.SimpleNamespace(should_training_stop=False)
+        state = SimpleNamespace(epoch=0.0)
+        control = SimpleNamespace(should_training_stop=False)
 
         _EpochStopCallback(trainer, target_groups=4, num_prompts=4).on_step_end(None, state, control)
 
