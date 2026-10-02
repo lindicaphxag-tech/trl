@@ -526,8 +526,8 @@ class _EpochStopCallback(TrainerCallback):
     An epoch is counted in distinct prompts actually trained (accumulated in the collator, which runs on the main
     process just before the model forward). Where [`~trl.experimental.async_grpo.async_grpo_trainer`] counts
     prompt-groups, one prompt here yields exactly one training sample, so a prompt and a group are the same thing. Only
-    the main process collates (`dispatch_batches=True`), so the stop decision is reduced across ranks to keep
-    data-parallel workers in lockstep.
+    the main process collates (`dispatch_batches=True`), so the trained-prompt count is gathered across ranks and used
+    for both `state.epoch` and the stop decision.
     """
 
     def __init__(self, trainer: "AsyncDistillationTrainer", target_prompts: int, num_prompts: int):
