@@ -925,6 +925,20 @@ class TestEpochStop:
         assert state.epoch == pytest.approx(expected_epoch)
         assert control.should_training_stop is should_stop
 
+    def test_uses_gathered_prompt_progress_on_non_main_rank(self):
+        trainer = types.SimpleNamespace(
+            accelerator=types.SimpleNamespace(device="cpu", gather=lambda tensor: tensor.new_tensor([0, 3])),
+            _trained_prompts=set(),
+            _prompts_before_resume=0,
+        )
+        state = types.SimpleNamespace(epoch=0.0)
+        control = types.SimpleNamespace(should_training_stop=False)
+
+        _EpochStopCallback(trainer, target_prompts=4, num_prompts=4).on_step_end(None, state, control)
+
+        assert state.epoch == pytest.approx(0.75)
+        assert control.should_training_stop is False
+
 
 class TestRolloutStateCheckpoint(TrlTestCase):
     """Prompt-index checkpoint/resume logic — no GPU or vLLM required."""
