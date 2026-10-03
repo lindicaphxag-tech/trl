@@ -1455,6 +1455,20 @@ class TestEpochStopCallback:
         assert state.epoch == pytest.approx(expected_epoch)
         assert control.should_training_stop is should_stop
 
+    def test_uses_gathered_group_progress_on_non_main_rank(self):
+        trainer = SimpleNamespace(
+            accelerator=SimpleNamespace(device="cpu", gather=lambda tensor: tensor.new_tensor([0, 3])),
+            _trained_groups=set(),
+            _groups_before_resume=0,
+        )
+        state = SimpleNamespace(epoch=0.0)
+        control = SimpleNamespace(should_training_stop=False)
+
+        _EpochStopCallback(trainer, target_groups=4, num_prompts=4).on_step_end(None, state, control)
+
+        assert state.epoch == pytest.approx(0.75)
+        assert control.should_training_stop is False
+
 
 @pytest.mark.skipif(
     not is_ampere_or_newer() and torch_device != "xpu",
