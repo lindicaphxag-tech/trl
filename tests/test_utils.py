@@ -461,6 +461,63 @@ class TestGenerateModelCard(TrlTestCase):
         assert "My Trainer" in card_text
 
 
+    def test_utf8_model_card_template_under_ascii_default(self):
+        # Reproduces #7720: old huggingface_hub reads the path using the
+        # locale's ASCII encoding; this must not affect TRL's Unicode template.
+        from pathlib import Path
+
+        original_read_text = Path.read_text
+        template_encodings = []
+
+        def read_text_with_ascii_default(path, encoding=None, errors=None):
+            if str(path).endswith("templates/lm_model_card.md"):
+                template_encodings.append(encoding)
+                if encoding is None:
+                    encoding = "ascii"
+            return original_read_text(path, encoding=encoding, errors=errors)
+
+        with patch.object(Path, "read_text", read_text_with_ascii_default):
+            model_card = generate_model_card(
+                base_model=None,
+                model_name="unicode-model",
+                hub_model_id="username/unicode-model",
+                dataset_name=None,
+                tags=[],
+                wandb_url=None,
+                trackio_url=None,
+                trainer_name="Test Trainer",
+            )
+
+        assert template_encodings == ["utf-8"]
+        assert "Gallouédec" in str(model_card)
+
+    def test_utf8_template_explicit_for_custom_model_card(self):
+        from pathlib import Path
+
+        original_read_text = Path.read_text
+        seen_encodings = []
+
+        def check_encoding(path, encoding=None, errors=None):
+            if str(path).endswith("templates/lm_model_card.md"):
+                seen_encodings.append(encoding)
+            return original_read_text(path, encoding=encoding, errors=errors)
+
+        with patch.object(Path, "read_text", check_encoding):
+            card = generate_model_card(
+                base_model=None,
+                model_name="card-check",
+                hub_model_id="test/card-check",
+                dataset_name=None,
+                tags=[],
+                wandb_url=None,
+                trackio_url=None,
+                trainer_name="Test",
+                template_file="lm_model_card.md",
+            )
+        assert seen_encodings == ["utf-8"]
+        assert "card-check" in str(card)
+
+
 class TestFlushLeft(TrlTestCase):
     def test_basic_case(self):
         mask = torch.tensor([[0, 0, 1, 1, 1], [0, 1, 1, 0, 0]])
