@@ -771,7 +771,6 @@ class DataCollatorForRollout(DataCollatorMixin):
     pad_token_id: int
     num_processes: int = 1
     teacher_id_to_idx: dict[str, int] | None = None
-    beta: float = 0.0
     return_tensors: str = "pt"
     # Distinct prompts trained so far, shared by reference with the trainer.
     prompts_trained: set[int] = field(default_factory=set)
@@ -779,6 +778,8 @@ class DataCollatorForRollout(DataCollatorMixin):
     metrics: dict[str, list] = field(default_factory=lambda: defaultdict(list))
     # Per-row token cap of the planner,
     token_budget: int = 0
+    # Appended to preserve the existing positional argument order of this internal dataclass.
+    beta: float = 0.0
 
     def torch_call(self, examples: list[Any]) -> dict[str, Any]:
         # The dataloader uses batch_size=1 over a planner that pre-partitions each micro-batch into `num_processes`
