@@ -2404,3 +2404,34 @@ def _any_adapter_merged(model) -> bool:
     from peft.tuners.tuners_utils import BaseTunerLayer
 
     return any(isinstance(module, BaseTunerLayer) and module.merged for module in model.modules())
+
+
+def test_merged_weight_sync_publishes_version_before_resuming_inference():
+    """Inference must not accept new weights while rollout workers still report the old version."""
+    trainer = AsyncGRPOTrainer.__new__(AsyncGRPOTrainer)
+    trainer.model = object()
+    trainer.model_version = 7
+    trainer._streaming_iter = lambda: iter(())
+
+    events = []
+    accelerator = MagicMock()
+    accelerator.is_main_process = True
+    accelerator.unwrap_model.return_value = trainer.model
+    trainer.accelerator = accelerator
+
+    transfer = MagicMock()
+    transfer.pause.side_effect = lambda: events.append("pause")
+    transfer.send_weights.side_effect = lambda iterator: (list(iterator), events.append("transfer"))
+    transfer.resume.side_effect = lambda: events.append(("resume", trainer.model_version))
+    trainer.weight_transfer = transfer
+
+    worker = MagicMock()
+    worker.update_model_version.side_effect = lambda version: events.append(("publish", version))
+    trainer.rollout_worker = worker
+
+    with patch("trl.experimental.async_grpo.async_grpo_trainer.is_peft_model", return_value=False):
+        trainer._sync_weight_merged(0.0)
+
+    assert events == ["pause", "transfer", ("publish", 8), ("resume", 8)]
+    assert accelerator.wait_for_everyone.call_count == 2
+    worker.update_model_version.assert_called_once_with(8)
