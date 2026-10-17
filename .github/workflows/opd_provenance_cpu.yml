@@ -1,0 +1,24 @@
+name: OPD provenance CPU smoke
+
+on:
+  pull_request:
+    branches:
+      - review/upstream-trl-20261017
+    paths:
+      - "trl/experimental/async_distillation/async_rollout_worker.py"
+      - "tests/experimental/test_async_distillation_trainer.py"
+      - "ci/opd_source_contract.py"
+      - ".github/workflows/opd_provenance_cpu.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy-version-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute production-method AST smoke check
+        run: python3 ci/opd_source_contract.py
