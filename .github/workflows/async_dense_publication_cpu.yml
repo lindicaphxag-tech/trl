@@ -1,0 +1,24 @@
+name: Async dense policy publication CPU contracts
+
+on:
+  pull_request:
+    branches:
+      - fix/async-dense-policy-publish-before-resume-20261017
+    paths:
+      - "ci/async_dense_publication_source_contract.py"
+      - ".github/workflows/async_dense_publication_cpu.yml"
+      - "trl/experimental/async_grpo/async_grpo_trainer.py"
+      - "trl/experimental/async_distillation/async_distillation_trainer.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publication-order:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute both production sync methods and 6 deterministic invariants
+        run: python3 ci/async_dense_publication_source_contract.py
