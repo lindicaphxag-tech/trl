@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 import requests
 import torch
+from accelerate import PartialState
 from datasets import Dataset, load_dataset
 from requests.adapters import BaseAdapter
 from transformers import AutoTokenizer, TrainerControl
