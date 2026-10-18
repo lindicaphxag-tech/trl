@@ -17,7 +17,7 @@ permissions:
 jobs:
   teacher-support:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,3 +38,5 @@ jobs:
           pytest -q
           tests/experimental/test_async_distillation_trainer.py::TestPackingAwareBatching
           tests/experimental/test_async_distillation_trainer.py::TestNarrowTop1ActualSupport
+      - name: Sweep remaining CPU-eligible async distillation regressions
+        run: pytest -q tests/experimental/test_async_distillation_trainer.py --maxfail=1
