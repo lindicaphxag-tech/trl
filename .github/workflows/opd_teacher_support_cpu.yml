@@ -1,0 +1,39 @@
+name: OPD teacher-support CPU contracts
+
+on:
+  pull_request:
+    branches:
+      - fix/async-distillation-valid-token-normalization-20261017
+    paths:
+      - "ci/opd_teacher_support_source_contract.py"
+      - ".github/workflows/opd_teacher_support_cpu.yml"
+      - "trl/experimental/async_distillation/async_distillation_trainer.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  teacher-support:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Install TRL test dependencies
+        run: python -m pip install -e ".[test]" requests ruff
+      - name: Check production patch style
+        run: |
+          ruff check trl/experimental/async_distillation/async_distillation_trainer.py tests/experimental/test_async_distillation_trainer.py
+          ruff format --check trl/experimental/async_distillation/async_distillation_trainer.py tests/experimental/test_async_distillation_trainer.py
+      - name: Execute support helper extracted from production source
+        run: python ci/opd_teacher_support_source_contract.py
+      - name: Run CPU packing, support, and normalization regressions
+        run: >-
+          pytest -q
+          tests/experimental/test_async_distillation_trainer.py::TestPackingAwareBatching
+          tests/experimental/test_async_distillation_trainer.py::TestNarrowTop1ActualSupport
