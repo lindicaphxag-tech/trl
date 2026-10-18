@@ -1,9 +1,6 @@
 name: Async dense policy publication CPU contracts
 
 on:
-  push:
-    branches:
-      - ci/async-dense-publish-before-resume-cpu-20261017
   pull_request:
     branches:
       - fix/async-dense-policy-publish-before-resume-20261017
