@@ -24,12 +24,12 @@ jobs:
           python-version: "3.11"
       - name: Install CPU PyTorch
         run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-      - name: Execute support helper extracted from production source
-        run: python ci/opd_teacher_support_source_contract.py
       - name: Install TRL test dependencies
         run: python -m pip install -e ".[test]" requests
-      - name: Run focused production collator regressions
+      - name: Execute support helper extracted from production source
+        run: python ci/opd_teacher_support_source_contract.py
+      - name: Run CPU packing, support, and normalization regressions
         run: >-
-          pytest -q tests/experimental/test_async_distillation_trainer.py
-          -k "collator_excludes_missing_teacher_scores_from_loss_denominator or
-          collator_uses_beta_specific_support_for_valid_token_count"
+          pytest -q
+          tests/experimental/test_async_distillation_trainer.py::TestPackingAwareBatching
+          tests/experimental/test_async_distillation_trainer.py::TestNarrowTop1ActualSupport
