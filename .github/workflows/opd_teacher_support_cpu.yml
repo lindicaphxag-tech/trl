@@ -27,7 +27,7 @@ jobs:
       - name: Execute support helper extracted from production source
         run: python ci/opd_teacher_support_source_contract.py
       - name: Install TRL test dependencies
-        run: python -m pip install -e ".[test]"
+        run: python -m pip install -e ".[test]" requests
       - name: Run focused production collator regressions
         run: >-
           pytest -q tests/experimental/test_async_distillation_trainer.py
