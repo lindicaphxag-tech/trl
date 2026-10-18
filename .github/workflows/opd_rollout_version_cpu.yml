@@ -1,9 +1,6 @@
 name: OPD rollout policy-version provenance CPU regression
 
 on:
-  push:
-    branches:
-      - ci/opd-rollout-version-provenance-20261018
   pull_request:
     branches:
       - fix/async-opd-pin-rollout-sampling-policy-version-20261017
