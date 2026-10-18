@@ -17,8 +17,21 @@ permissions:
 jobs:
   publication-order:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Execute both production sync methods and 6 deterministic invariants
         run: python3 ci/async_dense_publication_source_contract.py
+      - name: Install CPU PyTorch
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: Install TRL test dependencies
+        run: python -m pip install -e ".[test]" requests
+      - name: Run both real trainer unit regressions
+        run: >-
+          pytest -q
+          tests/experimental/test_async_grpo_trainer.py
+          tests/experimental/test_async_distillation_trainer.py
+          -k merged_weight_sync_publishes_version_before_resuming_inference
