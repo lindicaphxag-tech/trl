@@ -2408,6 +2408,8 @@ def _any_adapter_merged(model) -> bool:
 
 def test_merged_weight_sync_publishes_version_before_resuming_inference():
     """Inference must not accept new weights while rollout workers still report the old version."""
+    # The trainer logger requires Accelerate's process state, even for this isolated method test.
+    PartialState()
     trainer = AsyncGRPOTrainer.__new__(AsyncGRPOTrainer)
     trainer.model = object()
     trainer.model_version = 7
