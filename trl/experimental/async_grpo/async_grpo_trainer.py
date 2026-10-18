@@ -1799,11 +1799,14 @@ class AsyncGRPOTrainer(_BaseTrainer):
 
         logger.info(f"Weight sync: resuming vLLM... (transfer took {t_transfer - t_barrier:.1f}s)")
         if self.accelerator.is_main_process:
-            if self.weight_transfer:
-                self.weight_transfer.resume()
+            # Publish the completed transfer's version while inference is still paused.
+            # Resuming first opens a window where vLLM can serve updated weights while
+            # the rollout worker still stamps requests with the previous version.
             self.model_version += 1
             if self.rollout_worker:
                 self.rollout_worker.update_model_version(self.model_version)
+            if self.weight_transfer:
+                self.weight_transfer.resume()
         return t_pause, t_barrier, t_transfer
 
     def _sync_weight_lora(self, t0: float) -> tuple[float, float, float]:
