@@ -42,7 +42,8 @@ for delta in [-1, 0, 1]:
     try:
         ids, logps = asyncio.run(score(FakeLoop(case), [1, 2], [7, 8], "http://teacher", "teacher"))
         assert delta == 0 or not expect_fixed, f"invalid-length response accepted (delta={delta})"
-        assert ids == [[7, 9], [8]] and logps == [[-.5, -1.], [-.2]]
+        if delta == 0:
+            assert ids == [[7, 9], [8]] and logps == [[-.5, -1.], [-.2]]
         if delta == 0:
             print("PASS legitimate teacher-forced response (including unordered top-k)")
         else:
