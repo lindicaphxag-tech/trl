@@ -1263,6 +1263,35 @@ class TestRolloutRequestModel(TrlTestCase):
         assert loop._request_model == ("trl-policy-v10" if lora_name else "Qwen/Qwen3-4B")
 
 
+    def test_retry_keeps_the_same_generation_policy_after_publication(self):
+        """All HTTP retries of a rollout must address one policy version."""
+        loop = self._loop("trl-policy")
+        loop._model_version_value.value = 9
+        attempted_models = []
+
+        async def fake_post(base_url, path, payload, timeout):
+            attempted_models.append(payload["model"])
+            # A new policy becomes visible after the first unsuccessful request.
+            if len(attempted_models) == 1:
+                loop._model_version_value.value = 10
+                raise TimeoutError("transient generation error")
+            return {"choices": [{"token_ids": [7]}]}
+
+        async def fake_retry(request, **kwargs):
+            try:
+                return await request()
+            except TimeoutError:
+                return await request()
+
+        loop._post = fake_post
+        loop._retry = fake_retry
+        completion, sampled_version = asyncio.run(loop._generate_one_turn([1, 2]))
+        assert completion == [7]
+        assert sampled_version == 9
+        assert attempted_models == ["trl-policy-v9", "trl-policy-v9"]
+        assert loop.model_version == 10
+
+
 # A LoRA-capable server, as reported by `/server_info`. `max_loras` covers the `max_staleness + 1` servable policy
 # versions plus the one being loaded, for the tests' default `max_staleness=1`.
 SERVER_LORA_CONFIG = {"max_lora_rank": 32, "max_loras": 3}
