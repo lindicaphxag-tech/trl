@@ -10,6 +10,9 @@ import asyncio
 import random
 import sys
 import time
+import queue
+import contextvars
+from collections import defaultdict
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,7 +58,11 @@ scope={
 exec(compile(ast.fix_missing_locations(ast.Module(body=nodes,type_ignores=[])),str(path),"exec"),scope)
 
 class Tokenizer:
+    def __init__(self, owner):
+        self.owner=owner
     def apply_chat_template(self, messages, **kwargs):
+        if self.owner.update_before_first and not self.owner.requests:
+            self.owner.model_version=1
         return [1,2,7,3] if any(m.get("role")=="tool" for m in messages) else [1,2]
 
 class Loop:
@@ -77,9 +84,11 @@ class Loop:
     chat_template_kwargs={}
     max_tool_calling_iterations=3
     _fork_threshold_tokens=0
-    tokenizer=Tokenizer()
-    def __init__(self):
+    def __init__(self, update_before_first=False):
+        self.model_version=0
         self.requests=[]
+        self.update_before_first=update_before_first
+        self.tokenizer=Tokenizer(self)
     async def _retry(self, thunk, **kwargs):
         return await thunk()
     async def _post(self, endpoint, payload, timeout):
@@ -87,8 +96,8 @@ class Loop:
         model=payload["model"]
         self.requests.append(model)
         if len(self.requests)==1:
-            assert model=="policy-v0"
-            # Simulate a completed weight sync before the next tool-driven turn.
+            assert model==("policy-v1" if self.update_before_first else "policy-v0")
+            # Simulate a weight publication in preparation or after the first request.
             self.model_version=1
             return {"choices":[{"token_ids":[7],"logprobs":{"token_logprobs":[-0.1]}}]}
         assert model=="policy-v1"
@@ -112,3 +121,71 @@ assert len(rows)==1 and len(rows[0]["turns"])==2
 print("REPRODUCED: group.model_version=v0 while turns requested policy-v0 then policy-v1")
 print("CONTRACT GAP: a multi-turn rollout need not correspond to a single behavior-policy version")
 print("BOUNDARY: logged per-token old_log_probs can still support correction; training bias is not proven")
+
+
+# Scenario B: the group was created at v0, but both HTTP turns used v1.
+# This is a second effect: the group-level staleness gate may drop fresh data.
+loop2=Loop(update_before_first=True)
+group_initial_version=loop2.model_version
+completion2,tokens2,rows2,_,_,_=asyncio.run(loop2._generate_one(
+    [{"role":"user","content":"look it up"}],
+    {"lookup":lambda:None},[{"name":"lookup"}],group_id=13))
+assert loop2.requests==["policy-v1","policy-v1"],loop2.requests
+assert group_initial_version==0 and tokens2==[7,8]
+print("REPRODUCED: initial group tag v0, all actual turn requests v1")
+
+# Execute the real AsyncGRPO trainer's RolloutQueueDataset.__iter__ staleness logic
+# with two source-tagged samples. No torch/transformers import is needed.
+trainer_file=Path("trl/experimental/async_grpo/async_grpo_trainer.py")
+trainer_ast=ast.parse(trainer_file.read_text(),filename=str(trainer_file))
+queue_class=next(n for n in trainer_ast.body if isinstance(n,ast.ClassDef) and n.name=="RolloutQueueDataset")
+iter_node=next(n for n in queue_class.body if isinstance(n,ast.FunctionDef) and n.name=="__iter__")
+it_scope={"time":time,"queue":queue,"contextvars":contextvars,
+          "logger":SimpleNamespace(info=lambda *args,**kwargs:None)}
+exec(compile(ast.fix_missing_locations(ast.Module(body=[iter_node],type_ignores=[])),
+             str(trainer_file),"exec"),it_scope)
+
+def make_sample(version, group_id):
+    return SimpleNamespace(model_version=version,group_id=group_id,
+        input_ids=[1,2,7,8], completion_mask=[0,0,1,1],
+        old_log_probs=[-.1,-.2],sampling_mask=None,advantage=1.,
+        metrics={},enqueued_at=None)
+
+class Consumer:
+    __iter__=it_scope["__iter__"]
+    def __init__(self, version):
+        self.queue=queue.Queue()
+        self.queue.put(make_sample(version,13))
+        self.queue.put(make_sample(1,99))  # fresh fallback if mislabeled sample dropped
+        self.model_version_fn=lambda:5
+        self.check_health_fn=lambda _:None
+        self.stale_after_s=2
+        self.poll_interval_s=.01
+        self.max_staleness=4
+        self.metrics=defaultdict(list)
+        self.wait_s=0.
+        self._trace_log_interval=8
+        self._last_traced_version=-1
+
+current=5
+actual_versions=[1,1]
+assert current-min(actual_versions)<=4
+bad=Consumer(group_initial_version)
+bad_result=next(iter(bad))
+assert bad_result["group_id"]==99, bad_result
+assert bad.metrics["sample/dropped_stale_total"]==[1.]
+good=Consumer(min(actual_versions))
+good_result=next(iter(good))
+assert good_result["group_id"]==13, good_result
+assert good.metrics["sample/dropped_stale_total"]==[]
+print("REPRODUCED: actual v1-v1 group rejected at v5 solely by group-start v0 tag")
+print("PASS: minimum actual turn version v1 satisfies the same real staleness gate")
+
+# Minimum actual version is sufficient for universal freshness; min/max
+# jointly describe policy-version homogeneity, without a full per-turn history.
+for versions in ([0,1],[1,1],[0,2],[2,3,2],[1,4,5]):
+    for current in range(0,9):
+        for limit in range(0,6):
+            assert all(current-v<=limit for v in versions)==(current-min(versions)<=limit)
+    assert (min(versions)==max(versions))==all(v==versions[0] for v in versions)
+print("PASS: finite version interval freshness/coherence invariants")
