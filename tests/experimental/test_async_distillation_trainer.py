@@ -1262,7 +1262,6 @@ class TestRolloutRequestModel(TrlTestCase):
         assert requests[1] == ("http://localhost:8001", "teacher-model")
         assert loop._request_model == ("trl-policy-v10" if lora_name else "Qwen/Qwen3-4B")
 
-
     def test_retry_keeps_the_same_generation_policy_after_publication(self):
         """All HTTP retries of a rollout must address one policy version."""
         loop = self._loop("trl-policy")
