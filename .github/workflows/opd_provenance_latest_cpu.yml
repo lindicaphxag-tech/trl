@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - "ci/opd_rollout_end_to_end_provenance.py"
+      - "ci/opd_generation_retry_provenance.py"
       - "trl/experimental/async_distillation/async_rollout_worker.py"
       - ".github/workflows/opd_provenance_latest_cpu.yml"
   workflow_dispatch:
@@ -23,6 +24,8 @@ jobs:
         run: python -m py_compile trl/experimental/async_distillation/async_rollout_worker.py ci/opd_rollout_end_to_end_provenance.py
       - name: Run real worker methods against raced model publication
         run: python ci/opd_rollout_end_to_end_provenance.py
+      - name: Verify actual source HTTP retry retains dispatch model
+        run: python ci/opd_generation_retry_provenance.py
       - name: Compare untouched upstream main behavior
         run: |
           git fetch --no-tags --depth=1 https://github.com/huggingface/trl.git c304acf2e550d508686b9a8da2734ca4cab09d23
