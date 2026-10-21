@@ -1,0 +1,29 @@
+name: OPD provenance latest upstream source validation
+on:
+  pull_request:
+    paths:
+      - "ci/opd_rollout_end_to_end_provenance.py"
+      - "trl/experimental/async_distillation/async_rollout_worker.py"
+      - ".github/workflows/opd_provenance_latest_cpu.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prove-provenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install numpy
+        run: python -m pip install numpy
+      - name: Compile production source and regression
+        run: python -m py_compile trl/experimental/async_distillation/async_rollout_worker.py ci/opd_rollout_end_to_end_provenance.py
+      - name: Run real worker methods against raced model publication
+        run: python ci/opd_rollout_end_to_end_provenance.py
+      - name: Compare untouched upstream main behavior
+        run: |
+          git show c304acf2e550d508686b9a8da2734ca4cab09d23:trl/experimental/async_distillation/async_rollout_worker.py > /tmp/trl_async_rollout_original.py
+          python ci/opd_rollout_end_to_end_provenance.py /tmp/trl_async_rollout_original.py --baseline
