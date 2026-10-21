@@ -136,7 +136,7 @@ print("REPRODUCED: initial group tag v0, all actual turn requests v1")
 
 # Execute the real AsyncGRPO trainer's RolloutQueueDataset.__iter__ staleness logic
 # with two source-tagged samples. No torch/transformers import is needed.
-trainer_file=Path("trl/experimental/async_grpo/async_grpo_trainer.py")
+trainer_file=Path(sys.argv[2]) if len(sys.argv)>2 else Path("trl/experimental/async_grpo/async_grpo_trainer.py")
 trainer_ast=ast.parse(trainer_file.read_text(),filename=str(trainer_file))
 queue_class=next(n for n in trainer_ast.body if isinstance(n,ast.ClassDef) and n.name=="RolloutQueueDataset")
 iter_node=next(n for n in queue_class.body if isinstance(n,ast.FunctionDef) and n.name=="__iter__")
