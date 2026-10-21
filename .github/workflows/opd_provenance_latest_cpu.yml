@@ -23,7 +23,7 @@ jobs:
       - name: Compile production source and regression
         run: python -m py_compile trl/experimental/async_distillation/async_rollout_worker.py ci/opd_rollout_end_to_end_provenance.py
       - name: Install Ruff for native-file quality gate
-        run: python -m pip install ruff
+        run: python -m pip install ruff==0.17.1
       - name: Check actual changed production and native test files
         run: |
           python -m py_compile tests/experimental/test_async_distillation_trainer.py
