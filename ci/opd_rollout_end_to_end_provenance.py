@@ -9,6 +9,9 @@ import asyncio
 import random
 import sys
 import time
+import queue
+import contextvars
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -88,6 +91,36 @@ if "_request_model" in scope:
 if "_request_model_for_version" in scope:
     Loop._request_model_for_version = scope["_request_model_for_version"]
 
+# Exercise the REAL trainer queue consumer on the worker's returned sample.
+trainer_file=Path("trl/experimental/async_distillation/async_distillation_trainer.py")
+trainer_ast=ast.parse(trainer_file.read_text(),filename=str(trainer_file))
+queue_cls=next(n for n in trainer_ast.body if isinstance(n,ast.ClassDef) and n.name=="RolloutQueueDataset")
+real_iter=next(n for n in queue_cls.body if isinstance(n,ast.FunctionDef) and n.name=="__iter__")
+consumer_scope={"time":time, "queue":queue, "contextvars":contextvars,
+                "logger":SimpleNamespace(info=lambda *args,**kwargs:None)}
+exec(compile(ast.fix_missing_locations(ast.Module(body=[real_iter],type_ignores=[])),
+             str(trainer_file),"exec"),consumer_scope)
+class Consumer:
+    __iter__=consumer_scope["__iter__"]
+    def __init__(self,sample):
+        self.queue=queue.Queue()
+        sample.enqueued_at=None
+        self.queue.put(sample)
+        # A truly fresh fallback avoids an infinite wait when baseline drops sample #12.
+        fallback=SimpleNamespace(**vars(sample))
+        fallback.prompt_id=99
+        fallback.model_version=9
+        self.queue.put(fallback)
+        self.model_version_fn=lambda:10
+        self.check_health_fn=lambda timeout:None
+        self.poll_interval_s=.01
+        self.stale_after_s=5
+        self.max_staleness=4
+        self.metrics=defaultdict(list)
+        self.wait_s=0.
+        self._trace_log_interval=8
+        self._last_traced_version=-1
+
 for adapter in ("policy", None):
     loop = Loop(adapter)
     sample = asyncio.run(loop._generate_and_score_one(
@@ -98,6 +131,17 @@ for adapter in ("policy", None):
     assert sample.teacher_topk_ids[-1, 0] == 7
     assert sample.teacher_topk_logprobs[-1, 0] == np.float32(-0.2)
     assert loop.model_version == 10
+    consumer=Consumer(sample)
+    delivered=next(iter(consumer))
+    if baseline:
+        assert delivered["prompt_id"]==99, delivered["prompt_id"]
+        assert consumer.metrics["sample/dropped_stale_total"]==[1.0]
+        print("EXPECTED BASELINE TRAINING LOSS:",adapter,
+              "v9-generated prompt #12 dropped as mislabeled v0")
+    else:
+        assert delivered["prompt_id"]==12, delivered["prompt_id"]
+        assert consumer.metrics["sample/dropped_stale_total"]==[]
+        print("PASS TRAINING RETAINS:",adapter,"v9 prompt #12 at v10")
     if baseline:
         assert sample.model_version == 0, sample.model_version
         print("EXPECTED BASELINE PROVENANCE FLAW:", adapter, "request v9, sample v0")
