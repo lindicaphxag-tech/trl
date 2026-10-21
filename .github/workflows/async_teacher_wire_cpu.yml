@@ -1,0 +1,25 @@
+name: Async teacher wire contract (CPU)
+on:
+  pull_request:
+    paths:
+      - "ci/async_teacher_wire_contract.py"
+      - "trl/experimental/async_distillation/async_rollout_worker.py"
+      - ".github/workflows/async_teacher_wire_cpu.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile source and contract
+        run: python -m py_compile ci/async_teacher_wire_contract.py trl/experimental/async_distillation/async_rollout_worker.py
+      - name: Execute actual production coroutine via AST extraction
+        run: python ci/async_teacher_wire_contract.py
