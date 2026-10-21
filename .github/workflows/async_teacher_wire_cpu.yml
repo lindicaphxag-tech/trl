@@ -21,5 +21,10 @@ jobs:
           python-version: "3.11"
       - name: Compile source and contract
         run: python -m py_compile ci/async_teacher_wire_contract.py trl/experimental/async_distillation/async_rollout_worker.py
-      - name: Execute actual production coroutine via AST extraction
+      - name: Execute fixed production coroutine via AST extraction
         run: python ci/async_teacher_wire_contract.py
+      - name: Reproduce malformed-response acceptance on base main
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          git show FETCH_HEAD:trl/experimental/async_distillation/async_rollout_worker.py > /tmp/async_rollout_worker_baseline.py
+          python ci/async_teacher_wire_contract.py /tmp/async_rollout_worker_baseline.py --baseline
