@@ -625,6 +625,14 @@ class _AsyncRolloutLoop:
         # `prompt_logprobs[i]` scores `sequence[i]` conditioned on `sequence[:i]`, so the row spans the whole sequence
         # and the completion region starts at `len(prompt_ids)`.
         prompt_logprobs = output["choices"][0]["prompt_logprobs"]
+        expected_positions = len(prompt_ids) + len(completion_ids)
+        if len(prompt_logprobs) != expected_positions:
+            # A truncated response would silently leave completion positions unscored;
+            # a longer response would misalign scores with the requested sequence.
+            raise ValueError(
+                "Teacher prompt_logprobs length mismatch: "
+                f"expected {expected_positions}, got {len(prompt_logprobs)}"
+            )
         topk_ids, topk_logprobs = [], []
         for position in range(len(prompt_ids), len(prompt_logprobs)):
             ids, lps = _parse_teacher_logprobs_at_position(prompt_logprobs[position])
