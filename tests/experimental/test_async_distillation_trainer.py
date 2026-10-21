@@ -486,6 +486,45 @@ class TestParseTeacherLogprobs:
         assert logprobs == pytest.approx(expected_logprobs)
 
 
+
+class TestTeacherScoreResponseLength:
+    """Exercise the real async teacher-scoring path without a live vLLM server."""
+
+    @pytest.mark.parametrize(
+        ("extra_rows", "valid"),
+        [(-1, False), (0, True), (1, False)],
+    )
+    def test_teacher_score_length_must_match_request(self, extra_rows, valid):
+        class _Tokenizer:
+            eos_token_id = 2
+
+        loop = _rollout_loop(processing_class=_Tokenizer(), teacher_top_k=2)
+        rows = [
+            None,
+            _position((2, -0.1, 1)),
+            _position((7, -0.5, 1), (9, -1.0, 2)),
+            _position((8, -0.2, 1)),
+        ]
+        if extra_rows == -1:
+            rows = rows[:-1]
+        elif extra_rows == 1:
+            rows = rows + [_position((9, -0.1, 1))]
+
+        async def fake_post(base_url, path, payload, timeout):
+            assert payload["prompt"] == [1, 2, 7, 8]
+            return {"choices": [{"prompt_logprobs": rows}]}
+
+        loop._post = fake_post
+        call = loop._score_with_teacher([1, 2], [7, 8], "http://teacher", "teacher")
+        if valid:
+            ids, logprobs = asyncio.run(call)
+            assert ids == [[7, 9], [8]]
+            assert logprobs == [[-0.5, -1.0], [-0.2]]
+        else:
+            with pytest.raises(ValueError, match="Teacher prompt_logprobs length mismatch"):
+                asyncio.run(call)
+
+
 def _rollout_loop(**kwargs):
     # `_AsyncRolloutLoop.__init__` only sets up state (no vLLM or teacher connection happens here).
     tokenizer = kwargs.get("processing_class") or AutoTokenizer.from_pretrained(
