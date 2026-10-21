@@ -8,13 +8,14 @@ it is not itself a proof of incorrect policy gradients.
 import ast
 import asyncio
 import random
+import sys
 import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-path=Path("trl/experimental/async_grpo/async_rollout_worker.py")
+path=Path(sys.argv[1]) if len(sys.argv)>1 else Path("trl/experimental/async_grpo/async_rollout_worker.py")
 tree=ast.parse(path.read_text(),filename=str(path))
 clazz=next(x for x in tree.body if isinstance(x,ast.ClassDef) and x.name=="_AsyncRolloutLoop")
 wanted={"_generate_one","_generate_one_turn","_request_model"}
