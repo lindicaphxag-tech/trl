@@ -1,0 +1,23 @@
+name: AsyncGRPO multi-turn policy provenance (CPU)
+on:
+  pull_request:
+    paths:
+      - "ci/async_grpo_multiturn_policy_contract.py"
+      - "trl/experimental/async_grpo/async_rollout_worker.py"
+      - ".github/workflows/async_grpo_multiturn_cpu.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  multi-turn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile production and source contract
+        run: python -m py_compile trl/experimental/async_grpo/async_rollout_worker.py ci/async_grpo_multiturn_policy_contract.py
+      - name: Run actual two-turn tool rollout with weight publish between turns
+        run: python ci/async_grpo_multiturn_policy_contract.py
