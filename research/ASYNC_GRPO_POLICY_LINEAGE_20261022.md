@@ -152,3 +152,68 @@ usable trajectories per 1,000 Teacher/tool requests, and held-out task return
 under matched compute/rollout budgets. Report confidence intervals and adverse
 cases. Without this study, no SOTA, training-efficiency, or PhD-level algorithm
 breakthrough is claimed.
+
+
+## 7. Strong-prior-art exclusion (literature checked 2026-10-22)
+
+Do not present importance-weight clipping, old-logprob correction,
+ESS-dependent stabilisation, or staleness/advantage correction as originating
+from this work. Relevant stronger references include:
+
+- Espeholt et al., [IMPALA / V-trace, ICML 2018](https://proceedings.mlr.press/v80/espeholt18a.html):
+  asynchronous actor-learner off-policy correction.
+- Huang et al., [Stable Asynchrony / VCPO, ICML 2026](https://proceedings.mlr.press/v306/huang26ca.html):
+  effective sample size, off-policy variance and minimum-variance baselines.
+- Zheng et al., [M2PO, ICLR 2026](https://proceedings.iclr.cc/paper_files/paper/2026/hash/8590b946e4f0c2b1262cb5b047924653-Abstract-Conference.html):
+  second-moment constraints under high rollout staleness.
+- Hu et al., [COPC, arXiv 2026-10-07](https://arxiv.org/abs/2610.09597):
+  nonseparable coupling between policy-ratio and advantage-estimation staleness.
+- Guan et al., [Missing Old Logits in Asynchronous Agentic RL, arXiv 2026](https://arxiv.org/abs/2605.12070):
+  training-inference discrepancy versus historical policy staleness.
+- Lin et al., [ResT, ICLR 2026](https://proceedings.iclr.cc/paper_files/paper/2026/hash/8730837e119f6b5d1b25f6da1dc2c28a-Abstract-Conference.html):
+  tool-task token-level policy-gradient reweighting.
+
+The new work here is a **system-specific correctness repair with
+source-code evidence**, not a claim to a new RL objective.
+
+## 8. Indistinguishability limit: request version is not weight attestation
+
+Consider a dense model whose client request is always `model="base"`.
+History A: a transfer installs weights from epoch 9 before the request is
+executed. History B: the request is executed just before that transfer, with
+epoch 8 weights, but the client-visible version counter is already 9.
+Both may yield the same token/logprob response on a particular prompt.
+Without the server reporting a *served-weight identity*, the client's request
+payload, local counter and returned tokens need not distinguish A from B.
+Thus no estimator based solely on client-side snapshots can universally
+identify which weight epoch actually produced the sample.
+
+A strong end-to-end design needs (a) a server-side installed-weight generation
+ID or cryptographic digest, bound to the decode request and echoed in its
+response; (b) a version lease that prevents eviction of an actively referenced
+adapter throughout multi-turn execution (or explicit cancellation/restart);
+(c) a train-side gate using the verified provenance and explicit policy for
+mixed-version trajectories; and (d) fault injection for late publishes,
+retries, cancellation and LoRA eviction.
+
+This is a **proposal requiring protocol support**, not a feature in current
+TRL/vLLM, and the indistinguishability observation is not claimed as a new
+distributed-systems theorem.
+
+## 9. Specific publishable experiment required before algorithm novelty claims
+
+Freeze a trace schema with fields `group_id`, `turn_id`,
+`requested_version`, `served_weight_digest`, `request_attempt`,
+`leased_epoch`, `old_logprob_checksum`, and `outcome`. Test across two
+distinct execution substrates (at least LoRA versioned serving and dense
+in-place weight transfer), with artificial tool delays, event-order
+randomisation and simulated worker crashes.
+
+Use a pre-registered factorial design crossing staleness budget, publish rate,
+network retry rate, adapter eviction window and trajectory length. Primary
+endpoint: confirmed provenance mismatch / false-stale-drop per 1,000 completed
+tool trajectories, with confidence intervals. Secondary: usable trajectories,
+wall-time and model utility under a matched token budget. Compare unchanged
+TRL, conservative request interval only, and server-attested lease protocol.
+Importantly, record cases where the new machinery causes cancellation overhead
+or no net learning improvement.
