@@ -2009,8 +2009,18 @@ class TestScoreGroupOptionThree(TrlTestCase):
         group.source_version_ranges = [(7, 9), (8, 8)]
         loop = _rollout_loop(reward_funcs=[two_reward], lora_name="policy")
         samples = asyncio.run(loop._score_group(group))
-        assert [s.model_version for s in samples] == [7, 8]
-        assert [s.metrics["rollout/request_version_span"] for s in samples] == [2.0, 0.0]
+        # One GRPO reward group must have one admission version; otherwise
+        # the stale filter could train on only a subset of its completions.
+        assert [s.model_version for s in samples] == [7, 7]
+        assert [s.metrics["rollout/request_version_span"] for s in samples] == [2.0, 2.0]
+
+        group.source_version_ranges = [(7, 7)]
+        with pytest.raises(ValueError, match="Incomplete group policy-source records"):
+            asyncio.run(loop._score_group(group))
+        group.source_version_ranges = [(9, 7), (8, 8)]
+        with pytest.raises(ValueError, match="Invalid group policy-source version interval"):
+            asyncio.run(loop._score_group(group))
+        group.source_version_ranges = [(7, 9), (8, 8)]
 
         dense_loop = _rollout_loop(reward_funcs=[two_reward])
         dense_samples = asyncio.run(dense_loop._score_group(group))
