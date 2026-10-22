@@ -1,0 +1,46 @@
+name: AsyncGRPO policy-version interval verification (CPU)
+on:
+  pull_request:
+    paths:
+      - "ci/async_grpo_policy_interval_contract.py"
+      - "ci/async_grpo_real_scheduler_contract.py"
+      - "ci/async_grpo_openenv_compat_contract.py"
+      - "trl/experimental/async_grpo/openenv_harness.py"
+      - "research/ASYNC_GRPO_POLICY_LINEAGE_20261022.md"
+      - "research/exact_mixed_behavior_group_estimator.py"
+      - "trl/experimental/async_grpo/async_rollout_worker.py"
+      - "tests/experimental/test_async_grpo_trainer.py"
+      - ".github/workflows/async_grpo_policy_interval_cpu.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  policy-interval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal test and formatting dependencies
+        run: python -m pip install numpy ruff==0.17.1
+      - name: Compile actual worker, trainer and tests
+        run: |
+          python -m py_compile trl/experimental/async_grpo/async_rollout_worker.py
+          python -m py_compile tests/experimental/test_async_grpo_trainer.py
+          python -m py_compile ci/async_grpo_policy_interval_contract.py
+          python -m py_compile trl/experimental/async_grpo/openenv_harness.py
+          python -m py_compile ci/async_grpo_openenv_compat_contract.py
+      - name: Ruff native worker and regression test
+        run: |
+          ruff check trl/experimental/async_grpo/async_rollout_worker.py trl/experimental/async_grpo/openenv_harness.py tests/experimental/test_async_grpo_trainer.py
+          ruff format --check trl/experimental/async_grpo/async_rollout_worker.py trl/experimental/async_grpo/openenv_harness.py tests/experimental/test_async_grpo_trainer.py
+      - name: Actual source contract - multi-turn, retry, scoring and staleness
+        run: python ci/async_grpo_policy_interval_contract.py
+      - name: Run actual concurrent scheduler with two completed rollouts
+        run: python ci/async_grpo_real_scheduler_contract.py
+      - name: Verify legacy OpenEnv generator and real scheduler remain compatible
+        run: python ci/async_grpo_openenv_compat_contract.py
+      - name: Exact finite-population mixed-policy estimator check
+        run: python research/exact_mixed_behavior_group_estimator.py
