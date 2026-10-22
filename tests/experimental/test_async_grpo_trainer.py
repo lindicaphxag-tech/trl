@@ -880,7 +880,7 @@ class TestAsyncRolloutWorkerEnvironments(TrlTestCase):
                 sampling_mask=[[], [], []],
                 rollout_id="r",
             )
-            return [{"role": "assistant", "content": "x"}], [2, 3], [sequence], 0, 0, None
+            return [{"role": "assistant", "content": "x"}], [2, 3], [sequence], 0, 0, None, (loop.model_version, loop.model_version)
 
         loop._generate_one = fake_generate_one
 
@@ -955,7 +955,7 @@ class TestAsyncRolloutWorkerEnvironments(TrlTestCase):
 
         async def _generate_one_turn(prompt_ids):
             ids = final if "<tool_response>" in loop.tokenizer.decode(prompt_ids) else tool_call
-            return ids, [-0.1] * len(ids), None
+            return ids, [-0.1] * len(ids), None, loop.model_version
 
         loop._generate_one_turn = _generate_one_turn
         PartialState()
@@ -1780,11 +1780,11 @@ def _run(*, turns, max_iters=None):
 
     async def _generate_one_turn(prompt_ids):
         ids = outputs.pop(0)
-        return ids, [-0.1] * len(ids), None
+        return ids, [-0.1] * len(ids), None, loop.model_version
 
     loop._generate_one_turn = _generate_one_turn
 
-    # _generate_one returns (completion, completion_ids, sequences, n_calls, n_failures, rollout_reward).
+    # _generate_one also returns an interval of request versions for trajectory provenance.
     return asyncio.run(loop._generate_one([{"role": "user", "content": "hi"}], {"t": t}, [t]))
 
 
@@ -1802,10 +1802,11 @@ class TestGenerateOneTurn(TrlTestCase):
     def test_full_vocabulary_sampling_uses_the_completions_endpoint(self):
         loop = _rollout_loop()
         response = {"choices": [{"token_ids": [4, 5], "logprobs": {"token_logprobs": [-0.1, -0.2]}}]}
-        requests, (ids, logprobs, sampling_mask) = self._generate(loop, response)
+        requests, (ids, logprobs, sampling_mask, source_version) = self._generate(loop, response)
         assert requests[0][0] == "/v1/completions"
         assert requests[0][1]["prompt"] == [1, 2, 3]
         assert (ids, logprobs, sampling_mask) == ([4, 5], [-0.1, -0.2], None)
+        assert source_version == loop.model_version
 
     def test_truncated_sampling_returns_the_candidate_sets(self):
         loop = _rollout_loop(top_p=0.9, top_k=4)
@@ -1820,12 +1821,13 @@ class TestGenerateOneTurn(TrlTestCase):
                 }
             ]
         }
-        requests, (ids, logprobs, sampling_mask) = self._generate(loop, response)
+        requests, (ids, logprobs, sampling_mask, source_version) = self._generate(loop, response)
         assert requests[0][0] == "/inference/v1/generate"
         assert requests[0][1]["token_ids"] == [1, 2, 3]
         assert requests[0][1]["sampling_params"]["top_p"] == 0.9
         assert requests[0][1]["sampling_params"]["top_k"] == 4
         assert (ids, logprobs, sampling_mask) == ([4, 5], [-0.1, -0.2], [[4, 7], [5]])
+        assert source_version == loop.model_version
 
     def _check(self, loop, model_config, paths, version="0.31.0"):
         class FakeSession:
@@ -1876,10 +1878,11 @@ class TestGenerateOneTurn(TrlTestCase):
             self._check(loop, {}, {"/v1/completions": {}}, version="0.27.1")
         assert "vLLM 0.27.1" in caplog.text
         response = {"choices": [{"token_ids": [4], "logprobs": {"token_logprobs": [-0.1]}}]}
-        requests, (ids, logprobs, sampling_mask) = self._generate(loop, response)
+        requests, (ids, logprobs, sampling_mask, source_version) = self._generate(loop, response)
         assert requests[0][0] == "/v1/completions"
         assert requests[0][1]["top_p"] == 0.9
         assert sampling_mask is None
+        assert source_version == loop.model_version
 
     def test_top_p_requires_top_k(self):
         with pytest.raises(ValueError, match="top_k"):
@@ -1889,7 +1892,7 @@ class TestGenerateOneTurn(TrlTestCase):
 @require_response_parsing
 class TestRolloutLoop(TrlTestCase):
     def test_single_turn_no_tool_call(self):
-        completion, completion_ids, sequences, n_calls, n_failures, _ = _run(turns=[_FINAL])
+        completion, completion_ids, sequences, n_calls, n_failures, _, version_range = _run(turns=[_FINAL])
         assert len(sequences) == 1
         n = len(completion_ids)
         assert sequences[0].input_ids[-n:] == completion_ids
@@ -1900,7 +1903,7 @@ class TestRolloutLoop(TrlTestCase):
 
     def test_clean_two_turns_stay_one_row(self):
         # The training chat template is prefix-preserving, so turn 2's re-tokenized prompt extends turn 1 -> one row
-        completion, completion_ids, sequences, n_calls, n_failures, _ = _run(turns=[_TOOL_CALL, _FINAL])
+        completion, completion_ids, sequences, n_calls, n_failures, _, version_range = _run(turns=[_TOOL_CALL, _FINAL])
         assert len(sequences) == 1
         assert sum(sequences[0].completion_mask) == len(completion_ids)  # every generated token is trained once
         assert [m["role"] for m in completion] == ["assistant", "tool", "assistant"]
@@ -1909,7 +1912,7 @@ class TestRolloutLoop(TrlTestCase):
 
     def test_max_tool_calling_iterations_caps_turns(self):
         # max_iters=0: even though turn 1 is a tool call, the loop breaks before executing it.
-        completion, _, sequences, n_calls, _, _ = _run(turns=[_TOOL_CALL], max_iters=0)
+        completion, _, sequences, n_calls, _, _, version_range = _run(turns=[_TOOL_CALL], max_iters=0)
         assert len(sequences) == 1
         assert [m["role"] for m in completion] == ["assistant"]  # no tool message appended
         assert n_calls == 0
