@@ -1129,8 +1129,14 @@ class _AsyncRolloutLoop:
         # At least one turn is generated.  Source model is a requested-version
         # snapshot, not an attestation of which weights vLLM actually executed.
         return (
-            completion, completion_ids, sequences, tool_call_count,
-            tool_failure_count, None, observed_min_version, observed_max_version,
+            completion,
+            completion_ids,
+            sequences,
+            tool_call_count,
+            tool_failure_count,
+            None,
+            observed_min_version,
+            observed_max_version,
         )
 
     async def _execute_tool_calls(
@@ -1198,7 +1204,9 @@ class _AsyncRolloutLoop:
         if not self.sampling_replay:
             payload = {
                 "model": self._request_model_for_version(requested_version),
-                "prompt": prompt_ids, "return_token_ids": True, **sampling_params,
+                "prompt": prompt_ids,
+                "return_token_ids": True,
+                **sampling_params,
             }
             output = await self._retry(
                 lambda: self._post("/v1/completions", payload, self.request_timeout),
@@ -1209,7 +1217,8 @@ class _AsyncRolloutLoop:
             return choice["token_ids"], choice["logprobs"]["token_logprobs"], None, requested_version
         payload = {
             "model": self._request_model_for_version(requested_version),
-            "token_ids": prompt_ids, "sampling_params": sampling_params,
+            "token_ids": prompt_ids,
+            "sampling_params": sampling_params,
         }
         output = await self._retry(
             lambda: self._post("/inference/v1/generate", payload, self.request_timeout),
@@ -1300,9 +1309,9 @@ class _AsyncRolloutLoop:
                 "reward_std": reward_std,
                 # Zero means one consistent requested policy across all turns
                 # and all generations in this group; nonzero means mixed policies.
-                "policy/version_span": float(
-                    group.model_version_max - group.model_version
-                ) if group.model_version_max is not None else 0.0,
+                "policy/version_span": float(group.model_version_max - group.model_version)
+                if group.model_version_max is not None
+                else 0.0,
                 **{
                     f"rewards/{name}": float(func_reward)
                     for name, func_reward in zip(self.reward_func_names, per_func_rewards[:, i], strict=True)
