@@ -5,6 +5,7 @@ on:
       - "ci/async_grpo_policy_interval_contract.py"
       - "ci/async_grpo_real_scheduler_contract.py"
       - "research/ASYNC_GRPO_POLICY_LINEAGE_20261022.md"
+      - "research/exact_mixed_behavior_group_estimator.py"
       - "trl/experimental/async_grpo/async_rollout_worker.py"
       - "tests/experimental/test_async_grpo_trainer.py"
       - ".github/workflows/async_grpo_policy_interval_cpu.yml"
@@ -35,3 +36,5 @@ jobs:
         run: python ci/async_grpo_policy_interval_contract.py
       - name: Run actual concurrent scheduler with two completed rollouts
         run: python ci/async_grpo_real_scheduler_contract.py
+      - name: Exact finite-population mixed-policy estimator check
+        run: python research/exact_mixed_behavior_group_estimator.py
