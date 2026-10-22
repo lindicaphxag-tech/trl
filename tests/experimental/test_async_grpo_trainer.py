@@ -1885,6 +1885,7 @@ class TestGenerateOneTurn(TrlTestCase):
 class TestRolloutLoop(TrlTestCase):
     def test_single_turn_no_tool_call(self):
         completion, completion_ids, sequences, n_calls, n_failures, _, min_version, max_version = _run(turns=[_FINAL])
+        assert (min_version, max_version) == (0, 0)
         assert len(sequences) == 1
         n = len(completion_ids)
         assert sequences[0].input_ids[-n:] == completion_ids
@@ -1896,6 +1897,7 @@ class TestRolloutLoop(TrlTestCase):
     def test_clean_two_turns_stay_one_row(self):
         # The training chat template is prefix-preserving, so turn 2's re-tokenized prompt extends turn 1 -> one row
         completion, completion_ids, sequences, n_calls, n_failures, _, min_version, max_version = _run(turns=[_TOOL_CALL, _FINAL])
+        assert (min_version, max_version) == (0, 0)
         assert len(sequences) == 1
         assert sum(sequences[0].completion_mask) == len(completion_ids)  # every generated token is trained once
         assert [m["role"] for m in completion] == ["assistant", "tool", "assistant"]
@@ -1905,6 +1907,7 @@ class TestRolloutLoop(TrlTestCase):
     def test_max_tool_calling_iterations_caps_turns(self):
         # max_iters=0: even though turn 1 is a tool call, the loop breaks before executing it.
         completion, _, sequences, n_calls, _, _, min_version, max_version = _run(turns=[_TOOL_CALL], max_iters=0)
+        assert (min_version, max_version) == (0, 0)
         assert len(sequences) == 1
         assert [m["role"] for m in completion] == ["assistant"]  # no tool message appended
         assert n_calls == 0
