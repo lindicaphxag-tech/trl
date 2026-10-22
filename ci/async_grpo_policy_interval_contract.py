@@ -136,7 +136,7 @@ def run_two_turns(loop,group_id):
 
 def group_instance(group_id):
     return SimpleNamespace(
-        group_id=group_id, model_version=0, model_version_max=None,
+        group_id=group_id, model_version=0, model_version_max=None, policy_source_complete=True,
         prompts=[],completions=[],completions_ids=[],
         completions_sequences=[],tool_call_counts=[],
         tool_failure_counts=[],reward_kwargs={},
