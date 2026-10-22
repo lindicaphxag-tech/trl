@@ -1770,7 +1770,7 @@ def t() -> str:
     return "ok"
 
 
-def _run(*, turns, max_iters=None):
+def _run(*, turns, max_iters=None, versions=None):
     """
     Drive `_AsyncRolloutLoop._generate_one` with the real tokenizer, chat template and response parser, scripting only
     the vLLM server, which generates the text of `turns` one turn after the other.
@@ -1779,6 +1779,9 @@ def _run(*, turns, max_iters=None):
     outputs = [loop.tokenizer.encode(text, add_special_tokens=False) for text in turns]
 
     async def _generate_one_turn(prompt_ids):
+        turn_index = len(turns) - len(outputs)
+        if versions is not None:
+            loop._model_version_value.value = versions[turn_index]
         ids = outputs.pop(0)
         return ids, [-0.1] * len(ids), None, loop.model_version
 
@@ -1828,6 +1831,32 @@ class TestGenerateOneTurn(TrlTestCase):
         assert requests[0][1]["sampling_params"]["top_k"] == 4
         assert (ids, logprobs, sampling_mask) == ([4, 5], [-0.1, -0.2], [[4, 7], [5]])
         assert source_version == loop.model_version
+
+    def test_retry_uses_one_versioned_lora_request(self):
+        loop = _rollout_loop(lora_name="policy")
+        loop._model_version_value.value = 7
+        attempted_models = []
+
+        async def fake_post(path, payload, timeout):
+            attempted_models.append(payload["model"])
+            if len(attempted_models) == 1:
+                loop._model_version_value.value = 8
+                raise TimeoutError("transient HTTP failure")
+            return {"choices": [{"token_ids": [4], "logprobs": {"token_logprobs": [-0.1]}}]}
+
+        async def fake_retry(thunk, **kwargs):
+            try:
+                return await thunk()
+            except TimeoutError:
+                return await thunk()
+
+        loop._post = fake_post
+        loop._retry = fake_retry
+        tokens, logprobs, mask, source_version = asyncio.run(loop._generate_one_turn([1, 2]))
+        assert (tokens, logprobs, mask) == ([4], [-0.1], None)
+        assert source_version == 7
+        assert attempted_models == ["policy-v7", "policy-v7"]
+        assert loop.model_version == 8
 
     def _check(self, loop, model_config, paths, version="0.31.0"):
         class FakeSession:
@@ -1900,6 +1929,7 @@ class TestRolloutLoop(TrlTestCase):
         assert sequences[0].old_log_probs[-n:] == [-0.1] * n
         assert [m["role"] for m in completion] == ["assistant"]
         assert n_calls == 0 and n_failures == 0
+        assert version_range == (0, 0)
 
     def test_clean_two_turns_stay_one_row(self):
         # The training chat template is prefix-preserving, so turn 2's re-tokenized prompt extends turn 1 -> one row
@@ -1909,6 +1939,15 @@ class TestRolloutLoop(TrlTestCase):
         assert [m["role"] for m in completion] == ["assistant", "tool", "assistant"]
         assert completion[1]["content"] == "ok"
         assert n_calls == 1 and n_failures == 0
+        assert version_range == (0, 0)
+
+    def test_mixed_turns_record_minimum_and_maximum_versions(self):
+        *_, version_range = _run(turns=[_TOOL_CALL, _FINAL], versions=[7, 9])
+        assert version_range == (7, 9)
+
+    def test_late_publication_before_first_turn_is_not_group_start_version(self):
+        *_, version_range = _run(turns=[_TOOL_CALL, _FINAL], versions=[9, 9])
+        assert version_range == (9, 9)
 
     def test_max_tool_calling_iterations_caps_turns(self):
         # max_iters=0: even though turn 1 is a tool call, the loop breaks before executing it.
@@ -1916,6 +1955,7 @@ class TestRolloutLoop(TrlTestCase):
         assert len(sequences) == 1
         assert [m["role"] for m in completion] == ["assistant"]  # no tool message appended
         assert n_calls == 0
+        assert version_range == (0, 0)
 
 
 def two_reward(completions, **kwargs):
@@ -1953,6 +1993,22 @@ class TestScoreGroupOptionThree(TrlTestCase):
         # _score_group logs via accelerate's logger, which requires PartialState() to be initialized
         # (the real worker does this in _child_main before running the loop).
         PartialState()
+
+    def test_actual_lora_request_bounds_replace_initial_group_label(self):
+        sequence = TrainingSequence(
+            [1, 2, 3], [0, 0, 1], [0.0, 0.0, -0.1], [[]] * 3, "c0"
+        )
+        group = _group([[sequence], [sequence]], completions_ids=[[3], [3]])
+        group.model_version = 0
+        group.source_version_ranges = [(7, 9), (8, 8)]
+        loop = _rollout_loop(reward_funcs=[two_reward], lora_name="policy")
+        samples = asyncio.run(loop._score_group(group))
+        assert [s.model_version for s in samples] == [7, 8]
+        assert [s.metrics["rollout/request_version_span"] for s in samples] == [2.0, 0.0]
+
+        dense_loop = _rollout_loop(reward_funcs=[two_reward])
+        dense_samples = asyncio.run(dense_loop._score_group(group))
+        assert [s.model_version for s in dense_samples] == [0, 0]
 
     def test_one_advantage_per_conversation_stamped_on_every_row(self):
         # conv 0: one row; conv 1: two rows (a fork).
