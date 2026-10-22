@@ -290,3 +290,42 @@ numbers differ slightly, while the demonstrated effect persists.
 This identifies a concrete source of cross-policy **group-estimator
 shift**, not a proof of asymptotic estimator bias in an actual neural GRPO
 training run, nor an original derivation of importance sampling.
+
+
+## 11. OpenEnv compatibility: unknown provenance is not a homogeneous policy
+
+A cross-module audit found that `_HarnessRolloutLoop` in
+`openenv_harness.py` overrides the native six-field `_generate_one`
+contract and consumes the old three-field `_generate_one_turn`.
+The earlier eight-/four-field source fix would have broken this supported
+environment-RL path despite passing isolated AsyncGRPO source tests.
+
+The updated fork research branch preserves both six-/eight-field group
+producer results and three-/four-field white-box sampling results. When
+a producer supplies no request-version provenance, the scheduler keeps its
+older scheduling-time version as a **conservative bound**, sets
+`policy_source_complete=False`, and reports `policy/version_span=NaN`.
+It never labels that unknown source as a verified single-policy trajectory.
+A group whose every producer supplies request identity has
+`policy_source_complete=True` and an exact request-version interval.
+
+[GitHub Actions verification](https://github.com/lindicaphxag-tech/trl/actions/runs/39789207006)
+completed successfully and exercised actual production-source methods:
+the concurrent scheduler with reversed completion order, six-field legacy
+and mixed producer results, OpenEnv white-box sampling with three-/four-field
+return values, scoring, and the trainer's staleness consumer. It also passed
+Ruff lint/format on all modified native production/test files and a finite
+group-normalisation estimator check. This is CPU source-driven verification;
+it is **not** a full integration test with OpenEnv/vLLM or server-side
+weight-identity attestation.
+
+## 12. Review boundary
+
+The minimal **fork-side production change** is now cross-module rather than
+a worker-only patch: it touches the native AsyncGRPO worker, OpenEnv
+compatibility bridge, and original AsyncGRPO tests. Source-driven CPU scripts
+remain on the separate fork validation [PR #16](https://github.com/lindicaphxag-tech/trl/pull/16).
+Official [issue #7861](https://github.com/huggingface/trl/issues/7861) awaits
+maintainer design confirmation/assignment; no official new PR or Merge is
+claimed. Further work must verify real OpenEnv/vLLM paths before marking the
+patch fully integration-ready.
