@@ -1263,12 +1263,23 @@ class _AsyncRolloutLoop:
         # Under TRL's global token-mean loss a fork is invisible to the loss (see slime_research.md B.5),
         # so we do not split the reward or the advantage across a conversation's rows.
         samples = []
-        # Test fixtures built directly from RolloutGroup retain the original group tag.
-        # Runtime groups carry per-conversation bounds from the actual generation requests.
-        source_ranges = group.source_version_ranges or [(group.model_version, group.model_version)] * len(
-            group.completions
-        )
-        for i, (prompt, completion, sequences, advantage, reward, tm, source_range) in enumerate(
+        # GRPO advantages are computed across the entire group. Use ONE
+        # conservative admission version for every completion in that group;
+        # per-conversation admission could silently fragment a reward group.
+        source_ranges = group.source_version_ranges
+        if self.lora_name is not None and source_ranges:
+            if len(source_ranges) != len(group.completions):
+                raise ValueError("Incomplete group policy-source records")
+            if any(low > high for low, high in source_ranges):
+                raise ValueError("Invalid group policy-source version interval")
+            group_min_version = min(low for low, _ in source_ranges)
+            group_max_version = max(high for _, high in source_ranges)
+        else:
+            # A manually constructed legacy group or dense in-place update has
+            # no attested source. Retain its conservative scheduling version.
+            group_min_version = group.model_version
+            group_max_version = None
+        for i, (prompt, completion, sequences, advantage, reward, tm) in enumerate(
             zip(
                 group.prompts,
                 group.completions,
@@ -1276,7 +1287,6 @@ class _AsyncRolloutLoop:
                 advantages,
                 rewards,
                 tool_metrics,
-                source_ranges,
                 strict=True,
             )
         ):
@@ -1290,7 +1300,9 @@ class _AsyncRolloutLoop:
                 **tm,
             }
             if self.lora_name is not None:
-                metrics["rollout/request_version_span"] = float(source_range[1] - source_range[0])
+                metrics["rollout/request_version_span"] = (
+                    float(group_max_version - group_min_version) if group_max_version is not None else float("nan")
+                )
             for seq in sequences:
                 samples.append(
                     RolloutSample(
@@ -1301,10 +1313,9 @@ class _AsyncRolloutLoop:
                         old_log_probs=np.asarray(seq.old_log_probs, dtype=np.float32),
                         sampling_mask=seq.sampling_mask,
                         advantage=float(advantage),
-                        # A versioned LoRA URL identifies the source of each generation turn.
-                        # For dense in-place updates, the server's weight identity is not attested;
-                        # preserve the conservative group-start version instead.
-                        model_version=source_range[0] if self.lora_name is not None else group.model_version,
+                        # Entire reward group uses its minimum observed request version.
+                        # This identifies requested LoRA models, not an attested server weight hash.
+                        model_version=group_min_version,
                         group_id=group.group_id,
                         metrics=dict(metrics),  # own copy per row
                     )
