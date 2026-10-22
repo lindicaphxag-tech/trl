@@ -28,7 +28,6 @@ jobs:
       - name: Ruff native worker and regression test
         run: |
           ruff check trl/experimental/async_grpo/async_rollout_worker.py tests/experimental/test_async_grpo_trainer.py
-          ruff format --diff trl/experimental/async_grpo/async_rollout_worker.py tests/experimental/test_async_grpo_trainer.py
           ruff format --check trl/experimental/async_grpo/async_rollout_worker.py tests/experimental/test_async_grpo_trainer.py
       - name: Actual source contract - multi-turn, retry, scoring and staleness
         run: python ci/async_grpo_policy_interval_contract.py
