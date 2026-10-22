@@ -229,6 +229,9 @@ class RolloutGroup:
     env_rewards: list[tuple[type, float] | None]
     rollout_rewards: list[float | None]
     queued_at: float = 0.0
+    # None until a real generation request has completed: the group creation
+    # version must not be treated as an observed behavior-policy version.
+    model_version_max: int | None = None
 
 
 @dataclass(slots=True)
@@ -518,14 +521,17 @@ class _AsyncRolloutLoop:
     def model_version(self) -> int:
         return int(self._model_version_value.value)
 
-    @property
-    def _request_model(self) -> str:
+    def _request_model_for_version(self, model_version: int) -> str:
         # In vLLM's API an adapter *is* a model name: naming the base model while an adapter is loaded silently
         # serves the base model, so the published version has to be part of the request. `model_version` reads the
         # shared `mp.Value`, so a sync is picked up without extra IPC.
         if self.lora_name is None:
             return self.model_name
-        return f"{self.lora_name}-v{self.model_version}"
+        return f"{self.lora_name}-v{model_version}"
+
+    @property
+    def _request_model(self) -> str:
+        return self._request_model_for_version(self.model_version)
 
     def run(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -796,8 +802,19 @@ class _AsyncRolloutLoop:
                         tool_call_count,
                         tool_failure_count,
                         rollout_reward,
+                        observed_min_version,
+                        observed_max_version,
                     ) = task.result()
                     group = pending_groups[group_id]
+                    # Every completed generation contributes a nonempty version
+                    # interval.  Use its *minimum actual request version* for
+                    # the existing consumer's conservative staleness gate.
+                    if group.model_version_max is None:
+                        group.model_version = observed_min_version
+                        group.model_version_max = observed_max_version
+                    else:
+                        group.model_version = min(group.model_version, observed_min_version)
+                        group.model_version_max = max(group.model_version_max, observed_max_version)
                     group.prompts.append(prompt)
                     group.completions.append(completion)
                     group.completions_ids.append(completion_ids)
@@ -1026,7 +1043,7 @@ class _AsyncRolloutLoop:
 
     async def _generate_one(
         self, prompt: Messages, tool_dict: dict[str, Callable], tools: list[Callable], group_id: int = 0
-    ) -> tuple[list[dict[str, str]], list[int], list[TrainingSequence], int, int, float | None]:
+    ) -> tuple[list[dict[str, str]], list[int], list[TrainingSequence], int, int, float | None, int, int]:
         """Roll out one conversation, re-tokenizing the whole message list each turn and reconciling drift.
 
         Every turn renders the full conversation through the chat template, generates, records the turn, and feeds the
@@ -1049,6 +1066,8 @@ class _AsyncRolloutLoop:
         tool_failure_count = 0
         iteration_num = 0
         loop_exhausted = False
+        observed_min_version = None
+        observed_max_version = None
         max_iterations = self.max_tool_calling_iterations
         while True:
             prompt_ids = self.tokenizer.apply_chat_template(  # re-tokenize the WHOLE conversation
@@ -1059,7 +1078,13 @@ class _AsyncRolloutLoop:
                 chat_template=self.chat_template,
                 **self.chat_template_kwargs,
             )
-            turn_ids, turn_logprobs, turn_sampling_mask = await self._generate_one_turn(prompt_ids)
+            turn_ids, turn_logprobs, turn_sampling_mask, requested_version = await self._generate_one_turn(prompt_ids)
+            observed_min_version = (
+                requested_version if observed_min_version is None else min(observed_min_version, requested_version)
+            )
+            observed_max_version = (
+                requested_version if observed_max_version is None else max(observed_max_version, requested_version)
+            )
             assistant_message = parse_response(self.tokenizer, turn_ids, prefix=prompt_ids, tools=tools)
             completion.append(assistant_message)
             completion_ids.extend(turn_ids)
@@ -1089,7 +1114,12 @@ class _AsyncRolloutLoop:
             loop_exhausted=loop_exhausted,
             duration_s=time.monotonic() - t_dispatch,
         )
-        return completion, completion_ids, sequences, tool_call_count, tool_failure_count, None
+        # At least one turn is generated.  Source model is a requested-version
+        # snapshot, not an attestation of which weights vLLM actually executed.
+        return (
+            completion, completion_ids, sequences, tool_call_count,
+            tool_failure_count, None, observed_min_version, observed_max_version,
+        )
 
     async def _execute_tool_calls(
         self, tool_calls: list[dict[str, Any]], tool_dict: dict[str, Callable]
@@ -1133,8 +1163,11 @@ class _AsyncRolloutLoop:
         self._rates["tools/parallel_calls_mean"][1] += 1
         return tool_messages, n_calls, n_failures
 
-    async def _generate_one_turn(self, prompt_ids: list[int]) -> tuple[list[int], list[float], list[list[int]] | None]:
-        """Sample one turn: its token ids, their logprobs, and with top-k/top-p the candidate set of each token."""
+    async def _generate_one_turn(
+        self, prompt_ids: list[int]
+    ) -> tuple[list[int], list[float], list[list[int]] | None, int]:
+        """Sample one turn, returning the exact requested policy version with the response."""
+        requested_version = self.model_version
         sampling_params = {
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
@@ -1151,15 +1184,21 @@ class _AsyncRolloutLoop:
         if self.min_p is not None:
             sampling_params["min_p"] = self.min_p
         if not self.sampling_replay:
-            payload = {"model": self._request_model, "prompt": prompt_ids, "return_token_ids": True, **sampling_params}
+            payload = {
+                "model": self._request_model_for_version(requested_version),
+                "prompt": prompt_ids, "return_token_ids": True, **sampling_params,
+            }
             output = await self._retry(
                 lambda: self._post("/v1/completions", payload, self.request_timeout),
                 max_attempts=30,
                 label="vllm /v1/completions",
             )
             choice = output["choices"][0]
-            return choice["token_ids"], choice["logprobs"]["token_logprobs"], None
-        payload = {"model": self._request_model, "token_ids": prompt_ids, "sampling_params": sampling_params}
+            return choice["token_ids"], choice["logprobs"]["token_logprobs"], None, requested_version
+        payload = {
+            "model": self._request_model_for_version(requested_version),
+            "token_ids": prompt_ids, "sampling_params": sampling_params,
+        }
         output = await self._retry(
             lambda: self._post("/inference/v1/generate", payload, self.request_timeout),
             max_attempts=30,
@@ -1167,7 +1206,7 @@ class _AsyncRolloutLoop:
         )
         choice = output["choices"][0]
         logprobs = [token["logprob"] for token in choice["logprobs"]["content"]]
-        return choice["token_ids"], logprobs, choice["sampling_mask"]
+        return choice["token_ids"], logprobs, choice["sampling_mask"], requested_version
 
     async def _score_group(self, group: RolloutGroup) -> list[RolloutSample]:
         kwargs = dict(
@@ -1247,6 +1286,11 @@ class _AsyncRolloutLoop:
             metrics = {
                 "reward": float(reward),
                 "reward_std": reward_std,
+                # Zero means one consistent requested policy across all turns
+                # and all generations in this group; nonzero means mixed policies.
+                "policy/version_span": float(
+                    group.model_version_max - group.model_version
+                ) if group.model_version_max is not None else 0.0,
                 **{
                     f"rewards/{name}": float(func_reward)
                     for name, func_reward in zip(self.reward_func_names, per_func_rewards[:, i], strict=True)
