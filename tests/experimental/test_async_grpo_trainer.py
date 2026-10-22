@@ -1764,16 +1764,19 @@ def t() -> str:
     return "ok"
 
 
-def _run(*, turns, max_iters=None):
+def _run(*, turns, max_iters=None, turn_versions=None):
     """
     Drive `_AsyncRolloutLoop._generate_one` with the real tokenizer, chat template and response parser, scripting only
     the vLLM server, which generates the text of `turns` one turn after the other.
     """
     loop = _rollout_loop(tools=[t], max_tool_calling_iterations=max_iters)
     outputs = [loop.tokenizer.encode(text, add_special_tokens=False) for text in turns]
+    turn_versions = iter(turn_versions) if turn_versions is not None else None
 
     async def _generate_one_turn(prompt_ids):
         ids = outputs.pop(0)
+        if turn_versions is not None:
+            loop._model_version_value.value = next(turn_versions)
         return ids, [-0.1] * len(ids), None, loop.model_version
 
     loop._generate_one_turn = _generate_one_turn
@@ -1905,6 +1908,25 @@ class TestRolloutLoop(TrlTestCase):
         assert [m["role"] for m in completion] == ["assistant", "tool", "assistant"]
         assert completion[1]["content"] == "ok"
         assert n_calls == 1 and n_failures == 0
+
+    def test_policy_version_interval_tracks_each_real_tool_turn(self):
+        # A tool call permits a newer policy to publish between v3 and v4.
+        result = _run(turns=[_TOOL_CALL, _FINAL], turn_versions=[3, 4])
+        assert (result[-2], result[-1]) == (3, 4)
+        assert len(result[2]) == 1  # Existing token-chain reconciliation unchanged.
+        assert result[3:5] == (1, 0)
+
+    def test_group_policy_range_reduces_completions_without_the_scheduled_version(self):
+        group = _group([], [])
+        group.model_version = 0  # Scheduling snapshot, not a generated policy.
+        loop = _rollout_loop()
+        loop._record_group_policy_versions(group, 1, 1)
+        assert (group.model_version, group.model_version_max) == (1, 1)
+        loop._record_group_policy_versions(group, 2, 4)
+        assert (group.model_version, group.model_version_max) == (1, 4)
+        with pytest.raises(ValueError, match="version range must be ordered"):
+            loop._record_group_policy_versions(group, 5, 3)
+        assert (group.model_version, group.model_version_max) == (1, 4)
 
     def test_max_tool_calling_iterations_caps_turns(self):
         # max_iters=0: even though turn 1 is a tool call, the loop breaks before executing it.
