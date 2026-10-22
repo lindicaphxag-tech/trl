@@ -232,6 +232,11 @@ class RolloutGroup:
     # None until a real generation request has completed: the group creation
     # version must not be treated as an observed behavior-policy version.
     model_version_max: int | None = None
+    # True only if EVERY trajectory producer returned actual request-version
+    # metadata. Legacy/custom producers and agent-owned OpenEnv traces have
+    # no verifiable requested version and retain the scheduling bound.
+    policy_source_complete: bool = True
+    scheduled_model_version: int | None = None
 
 
 @dataclass(slots=True)
@@ -689,6 +694,11 @@ class _AsyncRolloutLoop:
         """
         if min_version > max_version:
             raise ValueError("Generation source version range must be ordered")
+        if not group.policy_source_complete:
+            # Keep the scheduling-time bound when any producer has no verifiable
+            # request-version metadata. Do not invent a max or claim homogeneity.
+            group.model_version = min(group.model_version, min_version)
+            return
         if group.model_version_max is None:
             group.model_version = min_version
             group.model_version_max = max_version
@@ -786,6 +796,7 @@ class _AsyncRolloutLoop:
                             tool_failure_counts=[],
                             model_version=self.model_version,
                             group_id=group_id,
+                            scheduled_model_version=self.model_version,
                             env_rewards=[],
                             rollout_rewards=[],
                         )
@@ -813,20 +824,40 @@ class _AsyncRolloutLoop:
                         raise task.exception()
                     self._total_rollouts += 1
 
-                    (
-                        completion,
-                        completion_ids,
-                        sequences,
-                        tool_call_count,
-                        tool_failure_count,
-                        rollout_reward,
-                        observed_min_version,
-                        observed_max_version,
-                    ) = task.result()
+                    result = task.result()
                     group = pending_groups[group_id]
-                    # Derive the staleness bound from observed HTTP request versions,
-                    # not from the group-creation time.
-                    self._record_group_policy_versions(group, observed_min_version, observed_max_version)
+                    if len(result) == 8:
+                        (
+                            completion,
+                            completion_ids,
+                            sequences,
+                            tool_call_count,
+                            tool_failure_count,
+                            rollout_reward,
+                            observed_min_version,
+                            observed_max_version,
+                        ) = result
+                        # Exact generation-request range from the default worker.
+                        self._record_group_policy_versions(group, observed_min_version, observed_max_version)
+                    elif len(result) == 6:
+                        (
+                            completion,
+                            completion_ids,
+                            sequences,
+                            tool_call_count,
+                            tool_failure_count,
+                            rollout_reward,
+                        ) = result
+                        # Third-party and OpenEnv producers still implement the
+                        # original six-field contract. Their actual serving
+                        # versions are unknown; preserve the *older* scheduling
+                        # bound instead of silently claiming observed homogeneity.
+                        group.policy_source_complete = False
+                        if group.scheduled_model_version is not None:
+                            group.model_version = min(group.model_version, group.scheduled_model_version)
+                        group.model_version_max = None
+                    else:
+                        raise ValueError("Rollout producer must return six or eight fields")
                     group.prompts.append(prompt)
                     group.completions.append(completion)
                     group.completions_ids.append(completion_ids)
@@ -1310,8 +1341,9 @@ class _AsyncRolloutLoop:
                 # Zero means one consistent requested policy across all turns
                 # and all generations in this group; nonzero means mixed policies.
                 "policy/version_span": float(group.model_version_max - group.model_version)
-                if group.model_version_max is not None
-                else 0.0,
+                if group.policy_source_complete and group.model_version_max is not None
+                else float("nan"),
+                "policy/provenance_complete": float(group.policy_source_complete),
                 **{
                     f"rewards/{name}": float(func_reward)
                     for name, func_reward in zip(self.reward_func_names, per_func_rewards[:, i], strict=True)
