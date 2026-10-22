@@ -678,6 +678,24 @@ class _AsyncRolloutLoop:
             )
             preemptions_seen = preemptions
 
+    @staticmethod
+    def _record_group_policy_versions(group: RolloutGroup, min_version: int, max_version: int) -> None:
+        """Maintain the exact range of requested policy versions across all completed turns.
+
+        For monotone policy versions, group.model_version is the least actual
+        generation-request version. The trainer's existing staleness gate
+        then conservatively checks every turn without false drops caused
+        solely by the group being scheduled before its first request.
+        """
+        if min_version > max_version:
+            raise ValueError("Generation source version range must be ordered")
+        if group.model_version_max is None:
+            group.model_version = min_version
+            group.model_version_max = max_version
+        else:
+            group.model_version = min(group.model_version, min_version)
+            group.model_version_max = max(group.model_version_max, max_version)
+
     async def _generate_loop(self, stop_event: asyncio.Event) -> None:
         pending_groups: dict[int, RolloutGroup] = {}
         pending_completed: dict[int, int] = {}
@@ -806,15 +824,9 @@ class _AsyncRolloutLoop:
                         observed_max_version,
                     ) = task.result()
                     group = pending_groups[group_id]
-                    # Every completed generation contributes a nonempty version
-                    # interval.  Use its *minimum actual request version* for
-                    # the existing consumer's conservative staleness gate.
-                    if group.model_version_max is None:
-                        group.model_version = observed_min_version
-                        group.model_version_max = observed_max_version
-                    else:
-                        group.model_version = min(group.model_version, observed_min_version)
-                        group.model_version_max = max(group.model_version_max, observed_max_version)
+                    # Derive the staleness bound from observed HTTP request versions,
+                    # not from the group-creation time.
+                    self._record_group_policy_versions(group, observed_min_version, observed_max_version)
                     group.prompts.append(prompt)
                     group.completions.append(completion)
                     group.completions_ids.append(completion_ids)
