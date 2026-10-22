@@ -880,7 +880,15 @@ class TestAsyncRolloutWorkerEnvironments(TrlTestCase):
                 sampling_mask=[[], [], []],
                 rollout_id="r",
             )
-            return [{"role": "assistant", "content": "x"}], [2, 3], [sequence], 0, 0, None, (loop.model_version, loop.model_version)
+            return (
+                [{"role": "assistant", "content": "x"}],
+                [2, 3],
+                [sequence],
+                0,
+                0,
+                None,
+                (loop.model_version, loop.model_version),
+            )
 
         loop._generate_one = fake_generate_one
 
@@ -1995,9 +2003,7 @@ class TestScoreGroupOptionThree(TrlTestCase):
         PartialState()
 
     def test_actual_lora_request_bounds_replace_initial_group_label(self):
-        sequence = TrainingSequence(
-            [1, 2, 3], [0, 0, 1], [0.0, 0.0, -0.1], [[]] * 3, "c0"
-        )
+        sequence = TrainingSequence([1, 2, 3], [0, 0, 1], [0.0, 0.0, -0.1], [[]] * 3, "c0")
         group = _group([[sequence], [sequence]], completions_ids=[[3], [3]])
         group.model_version = 0
         group.source_version_ranges = [(7, 9), (8, 8)]
