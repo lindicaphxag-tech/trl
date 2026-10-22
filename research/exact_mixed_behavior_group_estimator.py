@@ -9,6 +9,21 @@ from itertools import product
 from math import prod, sqrt
 
 
+def closed_form_K4(target_p, behavior_ps):
+    """Exact K=4 per-token-ratio/group-std expectation when eps=0, binary rewards.
+
+    Algebra follows by conditioning on the 16 possible Bernoulli action groups.
+    The two all-equal groups contribute zero (the unnormalised advantage is 0).
+    """
+    if len(behavior_ps)!=4:
+        raise ValueError("Closed form is only for K=4")
+    s1=sum(behavior_ps)
+    s2=sum(behavior_ps[i]*behavior_ps[j] for i in range(4) for j in range(i+1,4))
+    return target_p*(1-target_p)/12 * (
+        (4*sqrt(3)-6)*s2 + (9-6*sqrt(3))*s1 + 12*sqrt(3)
+    )
+
+
 def exact_gradient_expectations(target_p, behavior_ps, eps=1e-8):
     if not 0 < target_p < 1:
         raise ValueError("target Bernoulli parameter must be interior")
@@ -70,6 +85,15 @@ def run_checks():
             assert abs(row["leave_one_out"]-p*(1-p))<1e-11
     print("PASS: on-policy, group-joint ratio and leave-one-out identities")
     print("PASS: per-token ratio does not generally restore on-policy group-normalised expectation")
+    # Closed-form reduction for K=4 without epsilon. Holds for all interior
+    # p and heterogeneous mu, not just this one stress case.
+    for pi in (.05,.2,.5,.8):
+        for mus in ((.01,.01,.99,.99),(.1,.2,.3,.4),(.9,.9,.9,.9),
+                    (pi,pi,pi,pi)):
+            enumerated=exact_gradient_expectations(pi,mus,eps=0.)["per_token_ratio_group"]
+            derived=closed_form_K4(pi,mus)
+            assert abs(enumerated-derived)<1e-12,(pi,mus,enumerated,derived)
+    print("PASS: exact K=4 closed-form algebra matches full enumeration")
     print("RELATIVE GROUP EXPECTATION SHIFT:",
           (mixed["per_token_ratio_group"]/same_goal-1)*100,"%")
     print("LIMIT: this is an unclipped four-rollout binary bandit with a population-std group advantage,")
