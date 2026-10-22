@@ -25,7 +25,7 @@ for n in clazz.body:
 assert {n.name for n in methods}==names
 ns={
     "time":time, "asyncio":asyncio, "Any":Any, "Messages":list,
-    "RolloutGroup":lambda **kw:SimpleNamespace(**kw,model_version_max=None,queued_at=0),
+    "RolloutGroup":lambda **kw:SimpleNamespace(**kw,model_version_max=None,policy_source_complete=True,queued_at=0),
     "logger":SimpleNamespace(info=lambda *a,**kw:None),
 }
 exec(compile(ast.fix_missing_locations(ast.Module(body=methods,type_ignores=[])),
@@ -45,7 +45,8 @@ class Loop:
     _inflight=0
     _total_rollouts=0
     _total_completion_tokens=0
-    def __init__(self):
+    def __init__(self,mode="observed"):
+        self.mode=mode
         self._heartbeat_value=SimpleNamespace(value=0)
         self._rates=defaultdict(lambda:[0.,0.])
         self._groups_to_score=asyncio.Queue(maxsize=10)
@@ -72,7 +73,10 @@ class Loop:
             v_min,v_max=5,5
         sequence=SimpleNamespace(input_ids=[1,2,7],completion_mask=[0,0,1],
                                  old_log_probs=[0.,0.,-.1],sampling_mask=None)
-        return ([{"role":"assistant","content":"answer"}],[7],[sequence],0,0,None,v_min,v_max)
+        result=([{"role":"assistant","content":"answer"}],[7],[sequence],0,0,None,v_min,v_max)
+        if self.mode=="legacy" or (self.mode=="mixed" and index==1):
+            return result[:6]
+        return result
     def _push_metrics(self,values):
         self._pushed.append(values)
 
@@ -93,5 +97,22 @@ async def main():
     assert g.group_id==10
     print("PASS real async _generate_loop: two reversed-order completions aggregated to [2,5]")
     print("PASS real queued RolloutGroup has exactly two completions and actual min/max versions")
+    for mode in ("legacy","mixed"):
+        fallback=Loop(mode)
+        stop=asyncio.Event()
+        fallback.event=stop
+        await asyncio.wait_for(fallback._generate_loop(stop),timeout=4)
+        groups=[]
+        while not fallback._groups_to_score.empty():
+            candidate=fallback._groups_to_score.get_nowait()
+            if candidate is not None:
+                groups.append(candidate)
+        assert len(groups)==1
+        other=groups[0]
+        assert (other.model_version,other.model_version_max)==(0,None),(
+            mode,other.model_version,other.model_version_max)
+        assert other.policy_source_complete is False
+        assert len(other.completions)==2
+        print(f"PASS real scheduler accepts {mode} six-field legacy OpenEnv producers; provenance unknown")
 
 asyncio.run(main())
