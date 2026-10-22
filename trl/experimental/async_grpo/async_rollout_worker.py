@@ -1099,7 +1099,12 @@ class _AsyncRolloutLoop:
             duration_s=time.monotonic() - t_dispatch,
         )
         return (
-            completion, completion_ids, sequences, tool_call_count, tool_failure_count, None,
+            completion,
+            completion_ids,
+            sequences,
+            tool_call_count,
+            tool_failure_count,
+            None,
             (min(request_versions), max(request_versions)),
         )
 
