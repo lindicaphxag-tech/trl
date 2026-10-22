@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - "ci/async_grpo_policy_interval_contract.py"
+      - "research/ASYNC_GRPO_POLICY_LINEAGE_20261022.md"
       - "trl/experimental/async_grpo/async_rollout_worker.py"
       - "tests/experimental/test_async_grpo_trainer.py"
       - ".github/workflows/async_grpo_policy_interval_cpu.yml"
