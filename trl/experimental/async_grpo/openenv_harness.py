@@ -314,9 +314,11 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
             **self.chat_template_kwargs,
         )
         # ModelStep is sync on a pool thread; bridge the async vLLM POST onto the loop's event loop.
-        turn_ids, logprobs, sampling_mask = asyncio.run_coroutine_threadsafe(
-            self._generate_one_turn(prompt_ids), self._loop
-        ).result()
+        generation = asyncio.run_coroutine_threadsafe(self._generate_one_turn(prompt_ids), self._loop).result()
+        # Default generator now also returns its requested policy version.
+        # OpenEnv keeps its six-field rollout interface; the parent conservatively
+        # applies the original scheduling-time version when provenance is unknown.
+        turn_ids, logprobs, sampling_mask = generation[:3]
         turns.append(TurnRecord(prompt_ids, turn_ids, logprobs, output_sampling_mask=sampling_mask))
         response = _msg_to_llm_response(parse_response(self.tokenizer, turn_ids, prefix=prompt_ids, tools=tools))
         turn_times.append((t_request, time.monotonic(), [tc.name for tc in response.tool_calls]))
