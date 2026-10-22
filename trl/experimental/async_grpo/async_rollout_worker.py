@@ -229,6 +229,8 @@ class RolloutGroup:
     env_rewards: list[tuple[type, float] | None]
     rollout_rewards: list[float | None]
     queued_at: float = 0.0
+    # Per-conversation (minimum, maximum) request versions; populated after generation.
+    source_version_ranges: list[tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -518,14 +520,17 @@ class _AsyncRolloutLoop:
     def model_version(self) -> int:
         return int(self._model_version_value.value)
 
-    @property
-    def _request_model(self) -> str:
+    def _request_model_for_version(self, version: int) -> str:
         # In vLLM's API an adapter *is* a model name: naming the base model while an adapter is loaded silently
         # serves the base model, so the published version has to be part of the request. `model_version` reads the
         # shared `mp.Value`, so a sync is picked up without extra IPC.
         if self.lora_name is None:
             return self.model_name
-        return f"{self.lora_name}-v{self.model_version}"
+        return f"{self.lora_name}-v{version}"
+
+    @property
+    def _request_model(self) -> str:
+        return self._request_model_for_version(self.model_version)
 
     def run(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -796,10 +801,12 @@ class _AsyncRolloutLoop:
                         tool_call_count,
                         tool_failure_count,
                         rollout_reward,
+                        request_version_range,
                     ) = task.result()
                     group = pending_groups[group_id]
                     group.prompts.append(prompt)
                     group.completions.append(completion)
+                    group.source_version_ranges.append(request_version_range)
                     group.completions_ids.append(completion_ids)
                     group.completions_sequences.append(sequences)
                     group.tool_call_counts.append(tool_call_count)
@@ -1026,7 +1033,7 @@ class _AsyncRolloutLoop:
 
     async def _generate_one(
         self, prompt: Messages, tool_dict: dict[str, Callable], tools: list[Callable], group_id: int = 0
-    ) -> tuple[list[dict[str, str]], list[int], list[TrainingSequence], int, int, float | None]:
+    ) -> tuple[list[dict[str, str]], list[int], list[TrainingSequence], int, int, float | None, tuple[int, int]]:
         """Roll out one conversation, re-tokenizing the whole message list each turn and reconciling drift.
 
         Every turn renders the full conversation through the chat template, generates, records the turn, and feeds the
@@ -1047,6 +1054,7 @@ class _AsyncRolloutLoop:
         completion, completion_ids = [], []
         tool_call_count = 0
         tool_failure_count = 0
+        request_versions: list[int] = []
         iteration_num = 0
         loop_exhausted = False
         max_iterations = self.max_tool_calling_iterations
@@ -1059,7 +1067,8 @@ class _AsyncRolloutLoop:
                 chat_template=self.chat_template,
                 **self.chat_template_kwargs,
             )
-            turn_ids, turn_logprobs, turn_sampling_mask = await self._generate_one_turn(prompt_ids)
+            turn_ids, turn_logprobs, turn_sampling_mask, request_version = await self._generate_one_turn(prompt_ids)
+            request_versions.append(request_version)
             assistant_message = parse_response(self.tokenizer, turn_ids, prefix=prompt_ids, tools=tools)
             completion.append(assistant_message)
             completion_ids.extend(turn_ids)
@@ -1089,7 +1098,10 @@ class _AsyncRolloutLoop:
             loop_exhausted=loop_exhausted,
             duration_s=time.monotonic() - t_dispatch,
         )
-        return completion, completion_ids, sequences, tool_call_count, tool_failure_count, None
+        return (
+            completion, completion_ids, sequences, tool_call_count, tool_failure_count, None,
+            (min(request_versions), max(request_versions)),
+        )
 
     async def _execute_tool_calls(
         self, tool_calls: list[dict[str, Any]], tool_dict: dict[str, Callable]
@@ -1133,8 +1145,12 @@ class _AsyncRolloutLoop:
         self._rates["tools/parallel_calls_mean"][1] += 1
         return tool_messages, n_calls, n_failures
 
-    async def _generate_one_turn(self, prompt_ids: list[int]) -> tuple[list[int], list[float], list[list[int]] | None]:
+    async def _generate_one_turn(
+        self, prompt_ids: list[int]
+    ) -> tuple[list[int], list[float], list[list[int]] | None, int]:
         """Sample one turn: its token ids, their logprobs, and with top-k/top-p the candidate set of each token."""
+        # Snapshot exactly once: the URL model and this turn's provenance share one identity.
+        request_version = self.model_version
         sampling_params = {
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
@@ -1151,15 +1167,24 @@ class _AsyncRolloutLoop:
         if self.min_p is not None:
             sampling_params["min_p"] = self.min_p
         if not self.sampling_replay:
-            payload = {"model": self._request_model, "prompt": prompt_ids, "return_token_ids": True, **sampling_params}
+            payload = {
+                "model": self._request_model_for_version(request_version),
+                "prompt": prompt_ids,
+                "return_token_ids": True,
+                **sampling_params,
+            }
             output = await self._retry(
                 lambda: self._post("/v1/completions", payload, self.request_timeout),
                 max_attempts=30,
                 label="vllm /v1/completions",
             )
             choice = output["choices"][0]
-            return choice["token_ids"], choice["logprobs"]["token_logprobs"], None
-        payload = {"model": self._request_model, "token_ids": prompt_ids, "sampling_params": sampling_params}
+            return choice["token_ids"], choice["logprobs"]["token_logprobs"], None, request_version
+        payload = {
+            "model": self._request_model_for_version(request_version),
+            "token_ids": prompt_ids,
+            "sampling_params": sampling_params,
+        }
         output = await self._retry(
             lambda: self._post("/inference/v1/generate", payload, self.request_timeout),
             max_attempts=30,
@@ -1167,7 +1192,7 @@ class _AsyncRolloutLoop:
         )
         choice = output["choices"][0]
         logprobs = [token["logprob"] for token in choice["logprobs"]["content"]]
-        return choice["token_ids"], logprobs, choice["sampling_mask"]
+        return choice["token_ids"], logprobs, choice["sampling_mask"], request_version
 
     async def _score_group(self, group: RolloutGroup) -> list[RolloutSample]:
         kwargs = dict(
@@ -1233,7 +1258,12 @@ class _AsyncRolloutLoop:
         # Under TRL's global token-mean loss a fork is invisible to the loss (see slime_research.md B.5),
         # so we do not split the reward or the advantage across a conversation's rows.
         samples = []
-        for i, (prompt, completion, sequences, advantage, reward, tm) in enumerate(
+        # Test fixtures built directly from RolloutGroup retain the original group tag.
+        # Runtime groups carry per-conversation bounds from the actual generation requests.
+        source_ranges = group.source_version_ranges or [(group.model_version, group.model_version)] * len(
+            group.completions
+        )
+        for i, (prompt, completion, sequences, advantage, reward, tm, source_range) in enumerate(
             zip(
                 group.prompts,
                 group.completions,
@@ -1241,6 +1271,7 @@ class _AsyncRolloutLoop:
                 advantages,
                 rewards,
                 tool_metrics,
+                source_ranges,
                 strict=True,
             )
         ):
@@ -1253,6 +1284,8 @@ class _AsyncRolloutLoop:
                 },
                 **tm,
             }
+            if self.lora_name is not None:
+                metrics["rollout/request_version_span"] = float(source_range[1] - source_range[0])
             for seq in sequences:
                 samples.append(
                     RolloutSample(
@@ -1263,7 +1296,10 @@ class _AsyncRolloutLoop:
                         old_log_probs=np.asarray(seq.old_log_probs, dtype=np.float32),
                         sampling_mask=seq.sampling_mask,
                         advantage=float(advantage),
-                        model_version=group.model_version,
+                        # A versioned LoRA URL identifies the source of each generation turn.
+                        # For dense in-place updates, the server's weight identity is not attested;
+                        # preserve the conservative group-start version instead.
+                        model_version=source_range[0] if self.lora_name is not None else group.model_version,
                         group_id=group.group_id,
                         metrics=dict(metrics),  # own copy per row
                     )
