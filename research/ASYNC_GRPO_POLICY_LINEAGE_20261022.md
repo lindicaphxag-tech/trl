@@ -217,3 +217,46 @@ wall-time and model utility under a matched token budget. Compare unchanged
 TRL, conservative request interval only, and server-attested lease protocol.
 Importantly, record cases where the new machinery causes cancellation overhead
 or no net learning improvement.
+
+
+## 10. Exact finite counterexample: group normalisation and mixed behavior
+
+A further subtlety is **not** fixed by accurate version tags alone. Group-relative
+advantages are nonlinear functions of the *joint rollout batch*, so correcting
+each rollout with its marginal old-policy ratio need not recover the expected
+on-policy **group-normalised** gradient. This is a group estimator
+identification problem and should not be equated to proven bias in full TRL.
+
+The executable [exact enumerator](./exact_mixed_behavior_group_estimator.py)
+has no ML dependencies. It enumerates all 16 action tuples for a four-sample
+one-step Bernoulli bandit, with reward `r_i=a_i`, target-policy probability
+`p=0.05`, Bernoulli-logit score `a_i-p`, and GRPO-style population-standardised
+`A_i=(r_i-mean(r))/(std(r)+1e-8)`. It uses the **true** individual importance
+ratios `pi(a_i)/mu_i(a_i)`, with exact (not Monte Carlo) enumeration.
+
+- If every rollout uses the target policy `mu_i=p`, the expected group
+  gradient statistic is about **0.0812252822**.
+- If heterogeneous rollouts use `mu=[0.01,0.01,0.99,0.99]`, the expected
+  **marginal importance-weighted** statistic is about **0.0749968841**;
+  that is **7.67% lower** than the on-policy group-statistic expectation,
+  despite the ratios being correct.
+- Multiplying the *entire* group statistic by the correct **joint**
+  likelihood ratio `prod_i pi(a_i)/mu_i(a_i)` recovers the on-policy expected
+  group statistic exactly. Its finite-population correctness says nothing
+  about practical variance, which can become prohibitive with large groups.
+- An unstandardised leave-one-out reward baseline yields the unbiased
+  **ordinary expected-reward** policy gradient `p(1-p)=0.0475`, which is
+  **a different estimand** and should not be compared as though equal to the
+  standardised group objective.
+
+The mechanism is nonseparability: marginally correcting action `a_i` does not
+also correct the distribution of `A_i(a_1,...,a_K)` formed from the other
+actions. This is an elementary measure-change observation, not a claim that
+we invented joint importance sampling or leave-one-out baselines.
+
+**Limits:** the example is unclipped; it is *not* the full TRL GRPO/PPO loss,
+does not account for multiple optimizer steps, and does not test any real
+policy model. It motivates a separate comparison between homogeneous
+policy-epoch grouping, heterogeneous grouping with token ratios, and
+an explicitly specified joint/group-corrected objective under matched
+variance and rollout budgets.
