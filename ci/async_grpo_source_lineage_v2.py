@@ -47,7 +47,7 @@ def chain(turns, rollout_id, threshold):
     return [{"turns":turns}], {"reconciled":0}
 
 scope = {
-    "random":random,"time":time,"uuid":uuid,"np":np,"Any":Any,"Callable":Callable,
+    "random":random,"time":time,"uuid":uuid,"np":np,"asyncio":asyncio,"Any":Any,"Callable":Callable,
     "Messages":list,"TrainingSequence":list,
     "RolloutGroup":SimpleNamespace,
     "RolloutSample":lambda **kwargs:SimpleNamespace(**kwargs),
