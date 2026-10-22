@@ -1896,7 +1896,9 @@ class TestRolloutLoop(TrlTestCase):
 
     def test_clean_two_turns_stay_one_row(self):
         # The training chat template is prefix-preserving, so turn 2's re-tokenized prompt extends turn 1 -> one row
-        completion, completion_ids, sequences, n_calls, n_failures, _, min_version, max_version = _run(turns=[_TOOL_CALL, _FINAL])
+        completion, completion_ids, sequences, n_calls, n_failures, _, min_version, max_version = _run(
+            turns=[_TOOL_CALL, _FINAL]
+        )
         assert (min_version, max_version) == (0, 0)
         assert len(sequences) == 1
         assert sum(sequences[0].completion_mask) == len(completion_ids)  # every generated token is trained once
