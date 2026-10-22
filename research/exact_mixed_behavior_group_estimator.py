@@ -24,7 +24,7 @@ def closed_form_K4(target_p, behavior_ps):
     )
 
 
-def exact_gradient_expectations(target_p, behavior_ps, eps=1e-8):
+def exact_gradient_expectations(target_p, behavior_ps, eps=1e-8, with_variance=False):
     if not 0 < target_p < 1:
         raise ValueError("target Bernoulli parameter must be interior")
     if len(behavior_ps) < 2 or not all(0 < q < 1 for q in behavior_ps):
@@ -32,6 +32,7 @@ def exact_gradient_expectations(target_p, behavior_ps, eps=1e-8):
     K=len(behavior_ps)
     summaries={"on_policy_group":0., "per_token_ratio_group":0.,
                "joint_ratio_group":0.,"leave_one_out":0.}
+    second_moments={key:0. for key in summaries}
     for acts in product((0,1),repeat=K):
         prob_behavior=prod(q if a else 1-q for a,q in zip(acts,behavior_ps))
         prob_target=prod(target_p if a else 1-target_p for a in acts)
@@ -53,10 +54,15 @@ def exact_gradient_expectations(target_p, behavior_ps, eps=1e-8):
             ratios[i]*score[i]*(rewards[i]-(sum(rewards)-rewards[i])/(K-1))
             for i in range(K)
         )/K
-        summaries["on_policy_group"]+=prob_target*raw
-        summaries["per_token_ratio_group"]+=prob_behavior*token_ratio
-        summaries["joint_ratio_group"]+=prob_behavior*joint_ratio
-        summaries["leave_one_out"]+=prob_behavior*loo
+        values={"on_policy_group":raw, "per_token_ratio_group":token_ratio,
+                "joint_ratio_group":joint_ratio, "leave_one_out":loo}
+        for key,value in values.items():
+            mass=prob_target if key=="on_policy_group" else prob_behavior
+            summaries[key]+=mass*value
+            second_moments[key]+=mass*value*value
+    if with_variance:
+        return {key:(mean,max(0.,second_moments[key]-mean*mean))
+                for key,mean in summaries.items()}
     return summaries
 
 
@@ -94,6 +100,18 @@ def run_checks():
             derived=closed_form_K4(pi,mus)
             assert abs(enumerated-derived)<1e-12,(pi,mus,enumerated,derived)
     print("PASS: exact K=4 closed-form algebra matches full enumeration")
+    with_variances=exact_gradient_expectations(
+        .05,[.01,.01,.99,.99],with_variance=True)
+    # Joint group-ratio is unbiased for the *group* estimand in this
+    # finite example, but here has much higher variance than the
+    # marginal-ratio estimator. Correction is not free.
+    joint_var=with_variances["joint_ratio_group"][1]
+    marginal_var=with_variances["per_token_ratio_group"][1]
+    assert abs(joint_var-823.4980196595486)<1e-5
+    assert abs(marginal_var-.01902298587728981)<1e-7
+    assert joint_var>1000*marginal_var
+    print("PASS: exact joint-correction variance >1000x marginal-correction variance")
+    print("MIXED JOINT SD:",sqrt(joint_var),"MIXED MARGINAL SD:",sqrt(marginal_var))
     print("RELATIVE GROUP EXPECTATION SHIFT:",
           (mixed["per_token_ratio_group"]/same_goal-1)*100,"%")
     print("LIMIT: this is an unclipped four-rollout binary bandit with a population-std group advantage,")
