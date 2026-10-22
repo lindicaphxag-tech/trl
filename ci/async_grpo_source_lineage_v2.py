@@ -50,7 +50,7 @@ scope = {
     "random":random,"time":time,"uuid":uuid,"np":np,"asyncio":asyncio,"Any":Any,"Callable":Callable,
     "Messages":list,"TrainingSequence":list,
     "RolloutGroup":SimpleNamespace,
-    "RolloutSample":lambda **kwargs:SimpleNamespace(**kwargs),
+    "RolloutSample":lambda **kwargs:SimpleNamespace(enqueued_at=None,**kwargs),
     "parse_response":parse_response,"_chain_to_sequences":chain,
     "TurnRecord":lambda *args,**kwargs:SimpleNamespace(args=args,kwargs=kwargs),
     "logger":SimpleNamespace(info=lambda *a,**k:None),
