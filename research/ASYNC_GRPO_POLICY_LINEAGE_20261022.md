@@ -260,3 +260,33 @@ policy model. It motivates a separate comparison between homogeneous
 policy-epoch grouping, heterogeneous grouping with token ratios, and
 an explicitly specified joint/group-corrected objective under matched
 variance and rollout budgets.
+
+
+### Closed-form K=4 identity (not only a numerical experiment)
+
+In the same binary-reward group toy model, set `epsilon=0` for a nonconstant
+group and define `A_i=0` for an all-equal group. Let
+`S_1=mu_1+mu_2+mu_3+mu_4` and
+`S_2=sum_{i<j} mu_i mu_j`. Expanding all 16 action tuples gives the exact
+expected **marginal-importance-weighted group-standardised** logit-gradient:
+
+```
+E_mu[g_marginal]
+  = p(1-p)/12 * [
+      (4 sqrt(3)-6) S_2
+      + (9-6 sqrt(3)) S_1
+      + 12 sqrt(3)
+    ].
+```
+
+The formula holds for any strictly interior Bernoulli target `p` and
+behavior probabilities `mu_i`. The executable finite enumerator separately
+verifies this formula over heterogeneous probability tuples to 1e-12. It
+shows explicitly why true **marginal** ratios do not generally reconstruct
+the **joint** on-policy distribution of the other completions entering
+a nonseparable group advantage. With TRL's `1e-8` stabiliser, the exact
+numbers differ slightly, while the demonstrated effect persists.
+
+This identifies a concrete source of cross-policy **group-estimator
+shift**, not a proof of asymptotic estimator bias in an actual neural GRPO
+training run, nor an original derivation of importance sampling.
