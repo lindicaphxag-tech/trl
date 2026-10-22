@@ -157,6 +157,19 @@ else:
     assert [s.metrics["rollout/request_version_span"] for s in mixed_samples]==[1.,1.]
     assert [s.model_version for s in fresh_samples]==[1,1]
     assert [s.metrics["rollout/request_version_span"] for s in fresh_samples]==[0.,0.]
+    sibling_group=to_group(worker,completion,ids,rows,bounds)
+    sibling_group.source_version_ranges=[(1,1),(0,1)]
+    siblings=asyncio.run(worker._score_group(sibling_group))
+    assert [x.model_version for x in siblings]==[0,0]
+    assert [x.metrics["rollout/request_version_span"] for x in siblings]==[1.,1.]
+    sibling_group.source_version_ranges=[(1,1)]
+    try:
+        asyncio.run(worker._score_group(sibling_group))
+    except ValueError as exc:
+        assert "Incomplete group policy-source" in str(exc)
+    else:
+        raise AssertionError("Incomplete group provenance was silently accepted")
+    print("PASS mixed siblings cannot fragment a single reward group")
     dense=Worker()
     dense.lora_name=None
     dense_samples=asyncio.run(score(dense,fresh_completion,fresh_ids,fresh_rows,fresh_bounds))
