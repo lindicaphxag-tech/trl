@@ -58,12 +58,14 @@ class Loop:
     async def _generate_one(self,prompt,tool_dict,tools,group_id):
         self.launched+=1
         index=self.launched
+        # Simulate exactly the two completions of one group. The real
+        # iterator produces another group_id after two siblings are scheduled;
+        # stop admitting new work once both siblings have been dispatched.
+        if index==2:
+            self.event.set()
         await asyncio.sleep(.02 if index==1 else .005)
         self.finished+=1
-        # Distinct per-completion source intervals. Reverse completion order
-        # tests order independence of range aggregation under real scheduling.
-        if self.finished==2:
-            self.event.set()
+        # Reverse completion order tests commutative range aggregation.
         if index==1:
             v_min,v_max=2,3
         else:
