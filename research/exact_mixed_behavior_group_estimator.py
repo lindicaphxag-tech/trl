@@ -41,7 +41,9 @@ def exact_gradient_expectations(target_p, behavior_ps, eps=1e-8, with_variance=F
         rewards=acts  # Bernoulli one-step bandit, reward = action.
         mean=sum(rewards)/K
         std=sqrt(sum((r-mean)**2 for r in rewards)/K)
-        normalised=[(r-mean)/(std+eps) for r in rewards]
+        # All-equal action groups have identically zero centered rewards.
+        # This also defines the exact eps=0 closed-form boundary safely.
+        normalised=[0.]*K if std==0 else [(r-mean)/(std+eps) for r in rewards]
         score=[a-target_p for a in acts]  # score for Bernoulli logit.
         raw=sum(s*x for s,x in zip(score,normalised))/K
         token_ratio=sum(w*s*x for w,s,x in zip(ratios,score,normalised))/K
