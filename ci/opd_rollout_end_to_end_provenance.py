@@ -18,6 +18,10 @@ from typing import Any
 import numpy as np
 
 baseline = "--baseline" in sys.argv
+single_step = "--single-step" in sys.argv
+dispatch_version = 1 if single_step else 9
+consume_version = 1 if single_step else 10
+allowed_staleness = 0 if single_step else 4
 source_path = next((Path(x) for x in sys.argv[1:] if not x.startswith("--")),
                    Path("trl/experimental/async_distillation/async_rollout_worker.py"))
 tree = ast.parse(source_path.read_text(), filename=str(source_path))
@@ -41,7 +45,7 @@ class Tokenizer:
     def apply_chat_template(self, *args, **kwargs):
         # Publication while a queued task is being prepared (before HTTP dispatch).
         assert self.owner.model_version == 0
-        self.owner.model_version = 9
+        self.owner.model_version = dispatch_version
         return [1, 2]
     def decode(self, ids, skip_special_tokens=False):
         return "completion"
@@ -72,9 +76,9 @@ class Loop:
         return await thunk()
     async def _post(self, url, endpoint, payload, timeout):
         assert endpoint == "/v1/completions"
-        assert payload["model"] == ("policy-v9" if self.lora_name else "base"), payload
+        assert payload["model"] == (f"policy-v{dispatch_version}" if self.lora_name else "base"), payload
         self.seen.append(("dispatch", payload["model"]))
-        self.model_version = 10
+        self.model_version = consume_version
         await asyncio.sleep(0)
         return {"choices": [{"token_ids": [7]}]}
     def _resolve_teacher_server_url(self, row):
@@ -109,13 +113,13 @@ class Consumer:
         # A truly fresh fallback avoids an infinite wait when baseline drops sample #12.
         fallback=SimpleNamespace(**vars(sample))
         fallback.prompt_id=99
-        fallback.model_version=9
+        fallback.model_version=dispatch_version
         self.queue.put(fallback)
-        self.model_version_fn=lambda:10
+        self.model_version_fn=lambda:consume_version
         self.check_health_fn=lambda timeout:None
         self.poll_interval_s=.01
         self.stale_after_s=5
-        self.max_staleness=4
+        self.max_staleness=allowed_staleness
         self.metrics=defaultdict(list)
         self.wait_s=0.
         self._trace_log_interval=8
@@ -125,27 +129,27 @@ for adapter in ("policy", None):
     loop = Loop(adapter)
     sample = asyncio.run(loop._generate_and_score_one(
         12, {"prompt": [{"role": "user", "content": "question"}]}))
-    assert loop.seen == [("dispatch", "policy-v9" if adapter else "base"),
-                         ("teacher", (7,), 10)]
+    assert loop.seen == [("dispatch", f"policy-v{dispatch_version}" if adapter else "base"),
+                         ("teacher", (7,), consume_version)]
     assert sample.input_ids.tolist() == [1, 2, 7]
     assert sample.teacher_topk_ids[-1, 0] == 7
     assert sample.teacher_topk_logprobs[-1, 0] == np.float32(-0.2)
-    assert loop.model_version == 10
+    assert loop.model_version == consume_version
     consumer=Consumer(sample)
     delivered=next(iter(consumer))
     if baseline:
         assert delivered["prompt_id"]==99, delivered["prompt_id"]
         assert consumer.metrics["sample/dropped_stale_total"]==[1.0]
         print("EXPECTED BASELINE TRAINING LOSS:",adapter,
-              "v9-generated prompt #12 dropped as mislabeled v0")
+              f"v{dispatch_version}-generated prompt #12 dropped as mislabeled v0")
     else:
         assert delivered["prompt_id"]==12, delivered["prompt_id"]
         assert consumer.metrics["sample/dropped_stale_total"]==[]
-        print("PASS TRAINING RETAINS:",adapter,"v9 prompt #12 at v10")
+        print("PASS TRAINING RETAINS:",adapter,f"v{dispatch_version} prompt #12 at v{consume_version}")
     if baseline:
         assert sample.model_version == 0, sample.model_version
-        print("EXPECTED BASELINE PROVENANCE FLAW:", adapter, "request v9, sample v0")
+        print("EXPECTED BASELINE PROVENANCE FLAW:", adapter, f"request v{dispatch_version}, sample v0")
     else:
-        assert sample.model_version == 9, sample.model_version
-        print("PASS:", adapter, "request v9, scored sample v9, later publish v10")
+        assert sample.model_version == dispatch_version, sample.model_version
+        print("PASS:", adapter, f"request v{dispatch_version}, scored sample v{dispatch_version}, latest publish v{consume_version}")
 print("PASS: source-level end-to-end version provenance contrast")
