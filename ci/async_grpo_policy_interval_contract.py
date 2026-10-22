@@ -31,7 +31,7 @@ for n in cls.body:
         nodes.append(n)
 assert {x.name for x in nodes}==wanted
 scope={
-    "time":time, "uuid":uuid, "random":random, "np":np,
+    "time":time, "uuid":uuid, "random":random, "np":np, "asyncio":asyncio,
     "Any":Any, "Callable":Callable,
     "Messages":list, "TrainingSequence":list,
     "RolloutGroup":object,
