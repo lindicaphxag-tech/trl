@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - "ci/async_grpo_policy_interval_contract.py"
+      - "ci/async_grpo_real_scheduler_contract.py"
       - "research/ASYNC_GRPO_POLICY_LINEAGE_20261022.md"
       - "trl/experimental/async_grpo/async_rollout_worker.py"
       - "tests/experimental/test_async_grpo_trainer.py"
@@ -32,3 +33,5 @@ jobs:
           ruff format --check trl/experimental/async_grpo/async_rollout_worker.py tests/experimental/test_async_grpo_trainer.py
       - name: Actual source contract - multi-turn, retry, scoring and staleness
         run: python ci/async_grpo_policy_interval_contract.py
+      - name: Run actual concurrent scheduler with two completed rollouts
+        run: python ci/async_grpo_real_scheduler_contract.py
