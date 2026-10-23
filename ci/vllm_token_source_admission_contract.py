@@ -7,6 +7,7 @@ research/vllm_token_provenance_contract_20261023.md.
 from dataclasses import dataclass
 from pathlib import Path
 import ast
+from itertools import product
 import re
 import unittest
 
@@ -157,6 +158,23 @@ class TokenProvenanceContractTests(unittest.TestCase):
                          "reject-stale")
         self.assertEqual(group_admission([v2, v2], learner_version=1, max_staleness=1, cache_epoch_verified=True),
                          "reject-future")
+
+    def test_exhaustive_small_span_partitions(self):
+        # Exhaust every partition of 1..5 output tokens into contiguous
+        # nonempty spans with all 3^segments assignments of committed epochs.
+        checked = 0
+        for count in range(1, 6):
+            for boundaries in product((False, True), repeat=count - 1):
+                edges = [0] + [i + 1 for i, split in enumerate(boundaries) if split] + [count]
+                for epochs in product(("v0", "v1", "v2"), repeat=len(edges) - 1):
+                    spans = self.spans(
+                        *((label, edges[i], edges[i + 1]) for i, label in enumerate(epochs))
+                    )
+                    classification = self.check(spans, count)
+                    expected = "uniform" if len(set(epochs)) == 1 else "mixed"
+                    self.assertEqual(classification.kind, expected)
+                    checked += 1
+        self.assertGreater(checked, 500)
 
     def test_uniform_token_labels_do_not_attest_old_cached_context(self):
         # The server may label every newly sampled token v2 while its cached
