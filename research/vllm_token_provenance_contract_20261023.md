@@ -51,3 +51,46 @@ The server can label the only *newly sampled token* with a complete uniform `wei
 **Revised admission contract:** Even complete uniform output-token version labels are not sufficient to claim homogeneous-policy likelihood unless cached context is guaranteed to have been rebuilt from the matching weights, a pinned snapshot is used, or the server supplies an independently verified context cache-epoch guarantee. Our standalone prototype's `group_admission` now fails closed with `reject-cache-unverified` by default; `cache_epoch_verified=True` is *only a caller assertion for design testing*, not an attestation obtainable from existing TRL/vLLM APIs.
 
 The research trade-off is no longer just correct version labels. It is **source-consistent trajectory generation under asynchronous weight publication**, balancing `pause(wait/abort)` or cache reset (performance loss) against a verified pinned-context/lease scheme. Demonstrating a genuinely better throughput/quality trade-off and real training benefit is required for a doctoral-level algorithm claim. The exact numerical toy is in `ci/vllm_stale_kv_context_counterexample.py` and cannot establish novelty relative to the literature.
+
+
+## External ingress activation: previously missing global admission fence
+
+The initial multi-engine publisher marked itself poisoned if a weight-update or
+`resume` failed, but it did **not** stop client requests to an engine that had
+already resumed successfully. For an externally balanced group of independent
+vLLM servers, server-by-server confirmation is **not** equivalent to atomic
+client-visible publication. After a lost later resume ACK, earlier engines can
+already serve the new version while other engines are unavailable or uncertain.
+
+**Revised contract** in `ci/vllm_multi_engine_epoch_publisher.py`:
+an exclusive external admission gate is closed *before the first server pause*;
+all servers quiesce, clear reusable KV/prefix state, transfer and label weights,
+verify labels, and acknowledge resume **while the gate is still closed**;
+only then an atomic durable gate/epoch commit admits new requests. Any uncertain
+stage leaves the ingress gate closed and blocks further publication until
+reconciliation. A resumed worker after a lost ACK is still inaccessible to
+cooperative clients while the gate is closed.
+
+The gate model checks success across 1/2/4 servers, all 12 single-stage
+two-server failures, an ambiguous failure after a completed resume, and probes
+that client admission remains blocked during a staggered resume. A separate
+expanded local reference model adds before/after failure injection at all
+six stages across two servers (24 cases). The expanded model and 14 passing local
+tests are distributed in the user's research bundle. New GitHub Actions on
+this fork branch have **not produced an independent receipt**.
+
+**Required external assumptions:** every client request goes through a gate
+that cannot be bypassed; one exclusive writer holds the publishing lease;
+pause(wait) really drains requests; clear-cache reliably invalidates old
+prefix/KV state; gate epoch and open/closed status commit atomically and
+durably; and epoch labels correctly refer to installed weights. The prototype
+tests neither durable consensus nor the real vLLM engine implementation.
+`weight_info` checks only the chosen version label, not the actual tensor
+checksum. During any uncertain publication, safety may require sacrificing
+liveness: the gate remains closed until reconciled.
+
+This is the **next hypothesis** in a stronger system research line, not a
+claim to have invented an atomic publish protocol. It must be compared against
+existing async RL runtimes, including `AsyncOPD`, `VCPO`, and `M2PO`, then
+implemented and measured with real cache-aware vLLM requests and GRPO/OPD
+learning objectives before PhD-level originality or benefit can be asserted.
