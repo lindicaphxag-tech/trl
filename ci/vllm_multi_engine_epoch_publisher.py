@@ -89,6 +89,125 @@ class Publisher:
             raise Uncertain("manual reconciliation required") from exc
 
 
+
+
+class IngressGate:
+    """External, exclusive entry gate; a real deployment needs durable, atomic control."""
+
+    def __init__(self):
+        self.open = True
+        self.epoch = 0
+
+    def close(self):
+        self.open = False
+
+    def admit(self, engine):
+        if (
+            not self.open
+            or engine.paused
+            or engine.epoch != self.epoch
+            or engine.prefix_epoch is not None
+        ):
+            raise Uncertain("generation not admitted: publication barrier")
+        return self.epoch
+
+    def open_at(self, epoch, engines):
+        if self.open or any(
+            e.paused or e.epoch != epoch or e.label != f"v{epoch}"
+            or e.prefix_epoch is not None for e in engines
+        ):
+            raise Uncertain("not all engines have resumed at a coherent epoch")
+        # This memory assignment represents a REQUIRED atomic durable
+        # gate+epoch store; it is not a distributed consensus implementation.
+        self.epoch, self.open = epoch, True
+
+
+class GatedPublisher(Publisher):
+    """Close ingress before mutation and reopen only after every resume ACK."""
+
+    def __init__(self, engines, ingress):
+        super().__init__(engines)
+        self.ingress = ingress
+
+    def publish(self, epoch):
+        if self.poisoned or epoch != self.published + 1 or not self.ingress.open:
+            raise Uncertain("previous publication unconfirmed")
+        self.ingress.close()
+        try:
+            super().publish(epoch)
+            self.ingress.open_at(epoch, self.engines)
+        except Exception:
+            # Even if some engines have already resumed, they MUST remain
+            # inaccessible to clients until manual reconciliation.
+            self.ingress.close()
+            self.poisoned = True
+            raise
+
+
+class GatedPublisherTests(unittest.TestCase):
+    def test_all_engine_counts_publish_through_one_epoch(self):
+        for n in (1, 2, 4):
+            engines = [Engine(str(i)) for i in range(n)]
+            ingress = IngressGate()
+            pub = GatedPublisher(engines, ingress)
+            for epoch in (1, 2):
+                pub.publish(epoch)
+                self.assertEqual([ingress.admit(e) for e in engines], [epoch] * n)
+
+    def test_failure_at_each_stage_never_reopens_ingress(self):
+        checked = 0
+        for idx in (0, 1):
+            for stage in ("pause", "start", "transfer", "finish", "verify", "resume"):
+                engines = [Engine("a"), Engine("b")]
+                engines[idx].fail = stage
+                ingress = IngressGate()
+                pub = GatedPublisher(engines, ingress)
+                self.assertRaises(Uncertain, pub.publish, 1)
+                self.assertFalse(ingress.open)
+                self.assertTrue(pub.poisoned)
+                for e in engines:
+                    self.assertRaises(Uncertain, ingress.admit, e)
+                checked += 1
+        self.assertEqual(checked, 12)
+
+    def test_post_resume_ambiguous_failure_keeps_ingress_closed(self):
+        class ResumeThenError(Engine):
+            def resume(self):
+                super().resume()
+                raise IOError("lost ACK after successful resume")
+
+        engines = [ResumeThenError("a"), Engine("b")]
+        ingress = IngressGate()
+        pub = GatedPublisher(engines, ingress)
+        self.assertRaises(Uncertain, pub.publish, 1)
+        self.assertFalse(ingress.open)
+        self.assertFalse(engines[0].paused)  # A resumed engine is not safe ingress.
+        self.assertRaises(Uncertain, ingress.admit, engines[0])
+        self.assertRaises(Uncertain, ingress.admit, engines[1])
+
+    def test_gate_remains_closed_during_staggered_resume(self):
+        ingress = IngressGate()
+        checked = []
+
+        class ObservedEngine(Engine):
+            def resume(self):
+                super().resume()
+                with self_subtest_context():
+                    try:
+                        ingress.admit(self)
+                    except Uncertain:
+                        checked.append(self.name)
+
+        from contextlib import nullcontext
+        def self_subtest_context():
+            return nullcontext()
+
+        engines = [ObservedEngine("a"), ObservedEngine("b")]
+        GatedPublisher(engines, ingress).publish(1)
+        self.assertEqual(checked, ["a", "b"])
+        self.assertEqual([ingress.admit(e) for e in engines], [1, 1])
+
+
 class PublisherTests(unittest.TestCase):
     def test_publication_order_and_cache_reset(self):
         es = [Engine("a"), Engine("b")]
