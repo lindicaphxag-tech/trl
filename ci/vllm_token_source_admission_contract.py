@@ -65,7 +65,7 @@ def classify_spans(spans, token_count, *, committed_labels, lora=False):
     )
 
 
-def group_admission(decisions, *, learner_version, max_staleness):
+def group_admission(decisions, *, learner_version, max_staleness, cache_epoch_verified=False):
     """Conservative all-or-nothing admission for one GRPO reward group."""
     if max_staleness < 0 or learner_version < 0:
         raise ValueError("invalid version threshold")
@@ -81,6 +81,11 @@ def group_admission(decisions, *, learner_version, max_staleness):
     all_versions = [d.versions[0] for d in decisions]
     if min(all_versions) != max(all_versions):
         return "reject-mixed-group-source"
+    # Sampling-version spans alone cannot prove that KV-cache state was
+    # computed under the same weights. This proof must come from a protocol
+    # that resets/pins context or returns a real cache-epoch certificate.
+    if not cache_epoch_verified:
+        return "reject-cache-unverified"
     if learner_version - all_versions[0] > max_staleness:
         return "reject-stale"
     if all_versions[0] > learner_version:
@@ -144,14 +149,33 @@ class TokenProvenanceContractTests(unittest.TestCase):
     def test_group_atomicity_and_staleness(self):
         v1 = self.check(self.spans(("v1", 0, 4)), 4)
         v2 = self.check(self.spans(("v2", 0, 4)), 4)
-        self.assertEqual(group_admission([v1, v2], learner_version=2, max_staleness=2),
+        self.assertEqual(group_admission([v1, v2], learner_version=2, max_staleness=2, cache_epoch_verified=True),
                          "reject-mixed-group-source")
-        self.assertEqual(group_admission([v1, v1], learner_version=2, max_staleness=1),
+        self.assertEqual(group_admission([v1, v1], learner_version=2, max_staleness=1, cache_epoch_verified=True),
                          "accept")
-        self.assertEqual(group_admission([v1, v1], learner_version=3, max_staleness=1),
+        self.assertEqual(group_admission([v1, v1], learner_version=3, max_staleness=1, cache_epoch_verified=True),
                          "reject-stale")
-        self.assertEqual(group_admission([v2, v2], learner_version=1, max_staleness=1),
+        self.assertEqual(group_admission([v2, v2], learner_version=1, max_staleness=1, cache_epoch_verified=True),
                          "reject-future")
+
+    def test_uniform_token_labels_do_not_attest_old_cached_context(self):
+        # The server may label every newly sampled token v2 while its cached
+        # prefix keys/values still originate from v1 under pause(mode=keep).
+        d = self.check(self.spans(("v2", 0, 4)), 4)
+        self.assertEqual(d.kind, "uniform")
+        self.assertEqual(
+            group_admission([d], learner_version=2, max_staleness=0),
+            "reject-cache-unverified",
+        )
+        # Only an externally justified cache-consistency proof can enable
+        # the strict homogeneous-policy admission contract.
+        self.assertEqual(
+            group_admission(
+                [d], learner_version=2, max_staleness=0,
+                cache_epoch_verified=True,
+            ),
+            "accept",
+        )
 
     def test_gap_exists_in_pinned_current_trl_source(self):
         worker = Path("trl/experimental/async_grpo/async_rollout_worker.py").read_text()
