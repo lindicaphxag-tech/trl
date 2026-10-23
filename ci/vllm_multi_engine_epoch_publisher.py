@@ -192,15 +192,12 @@ class GatedPublisherTests(unittest.TestCase):
         class ObservedEngine(Engine):
             def resume(self):
                 super().resume()
-                with self_subtest_context():
-                    try:
-                        ingress.admit(self)
-                    except Uncertain:
-                        checked.append(self.name)
-
-        from contextlib import nullcontext
-        def self_subtest_context():
-            return nullcontext()
+                try:
+                    ingress.admit(self)
+                except Uncertain:
+                    checked.append(self.name)
+                else:
+                    raise AssertionError("ingress opened before all engines resumed")
 
         engines = [ObservedEngine("a"), ObservedEngine("b")]
         GatedPublisher(engines, ingress).publish(1)
