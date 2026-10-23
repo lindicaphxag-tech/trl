@@ -1,0 +1,21 @@
+name: Async weight snapshot-swap fence (research)
+on:
+  push:
+    branches:
+      - research/async-snapshot-swap-fencing-20261023
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  async-swap-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Static compile
+        run: python -m py_compile ci/async_weight_swap_contract.py
+      - name: Negative control and 12,870 interleavings
+        run: python -m unittest -v ci/async_weight_swap_contract.py
