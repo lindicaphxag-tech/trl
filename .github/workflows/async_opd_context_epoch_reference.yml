@@ -1,5 +1,8 @@
 name: Async OPD causal context provenance (CPU reference)
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - research/vllm-token-source-admission-20261023
