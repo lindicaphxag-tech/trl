@@ -1,0 +1,23 @@
+name: Fenced failover admission model (research)
+on:
+  push:
+    branches:
+      - research/fenced-failover-admission-20261023
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publication-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python source syntax
+        run: python -m py_compile ci/epoch_fenced_failover_contract.py
+      - name: Stale-writer regression and 924 interleavings
+        run: python -m unittest -v ci/epoch_fenced_failover_contract.py
