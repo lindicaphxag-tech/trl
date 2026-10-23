@@ -1,0 +1,23 @@
+name: TRL vLLM token-source admission contract (CPU)
+on:
+  pull_request:
+    paths:
+      - "ci/vllm_token_source_admission_contract.py"
+      - "research/vllm_token_provenance_contract_20261023.md"
+      - ".github/workflows/trl_vllm_token_source_cpu.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  token-lineage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Source compilation and pure-stdlib contract tests
+        run: |
+          python -m py_compile ci/vllm_token_source_admission_contract.py
+          python ci/vllm_token_source_admission_contract.py
