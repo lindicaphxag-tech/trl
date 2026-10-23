@@ -4,6 +4,7 @@ on:
     paths:
       - "ci/vllm_token_source_admission_contract.py"
       - "ci/vllm_stale_kv_context_counterexample.py"
+      - "ci/epoch_fenced_rollout_modelcheck.py"
       - "research/vllm_token_provenance_contract_20261023.md"
       - ".github/workflows/trl_vllm_token_source_cpu.yml"
   workflow_dispatch:
@@ -20,6 +21,7 @@ jobs:
           python-version: "3.12"
       - name: Source compilation and pure-stdlib contract tests
         run: |
-          python -m py_compile ci/vllm_token_source_admission_contract.py ci/vllm_stale_kv_context_counterexample.py
+          python -m py_compile ci/vllm_token_source_admission_contract.py ci/vllm_stale_kv_context_counterexample.py ci/epoch_fenced_rollout_modelcheck.py
           python ci/vllm_token_source_admission_contract.py
           python ci/vllm_stale_kv_context_counterexample.py
+          python ci/epoch_fenced_rollout_modelcheck.py
