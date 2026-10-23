@@ -1,0 +1,23 @@
+name: Async OPD causal context provenance (CPU reference)
+on:
+  push:
+    branches:
+      - research/vllm-token-source-admission-20261023
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  causal-context:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile mathematical counterexample
+        run: python -m py_compile ci/kv_epoch_attention_counterexample.py
+      - name: Toy self-attention conditional probability and provenance test
+        run: python -m unittest -v ci/kv_epoch_attention_counterexample.py
+      - name: Existing finite-state epoch protocol audit
+        run: python -m unittest -v ci/epoch_fenced_rollout_modelcheck.py
