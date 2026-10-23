@@ -79,8 +79,25 @@ The test suite explores selected faults, **not** the full reachable state space.
 - Exact same-revision vLLM integration, stale KV behavior, failure isolation,
   end-to-end rollout lineage and strong baseline throughput/learning tests
   are needed **before** proposing a production patch.
-- If the existing server checksum verifier already guarantees the exact
-  required contract, use it rather than inventing another checksum API.
+- **Prior art confirmed (2026-10-23): vLLM already ships a Weight Checker.**
+  It exposes `POST /weight_checker` with `checksum`, `reset`, and `compare`
+  actions, computing SHA-256 per model parameter across worker ranks. See
+  https://docs.vllm.ai/en/latest/training/weight_checker/ and the actual
+  server implementation documented at
+  https://docs.vllm.ai/en/stable/api/vllm/entrypoints/rl/online/api_router/ .
+  **The hash/verification primitive is therefore not our proposed novelty.**
+  The possible *integration* contribution is coordinating an already-available
+  checker with a multi-API-server admission gate, prefix-cache epoch, and
+  per-token trajectory provenance, where baseline checksums truly represent
+  the intended new policy.
+- vLLM's checker requires development mode and hashes weight tensors by
+  copying them to CPU; it excludes buffers, draft models, and LoRA adapters
+  and has backend-specific limitations. Accordingly a default-on production
+  checksum barrier is **not** a viable first upstream patch. Prefer an
+  opt-in diagnostics/strict-source mode only after real latency measurement.
+  A baseline taken from an *old* server snapshot is not a trusted manifest
+  for intended *new* parameters; this must be solved before any claim of
+  exact published-weight identity.
 
 ## Promotion criteria
 
