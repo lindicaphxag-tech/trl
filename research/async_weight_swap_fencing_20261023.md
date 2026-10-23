@@ -36,6 +36,29 @@ Existing vLLM exposes start/update/finish-weight-update, pause/resume and option
 
 For highest upstream merge probability, do **not** propose a mandatory inference-engine memory-layout redesign. First reproduce a live async stale-completion hazard (if reachable), verify all existing backend serialization guarantees, seek maintainer guidance on correct ownership (vLLM vs trusted external gate), and land only a minimal, opt-in regression-backed patch. If current vLLM serialization already excludes this race, record the negative finding rather than assert a bug.
 
+## Concrete real-system compatibility blocker found during follow-up
+
+As of 2026-10-23, upstream vLLM [issue #60744](https://github.com/vllm-project/vllm/issues/60744)
+documents a genuine CPU scheduler failure: `pause_generation(mode="keep", clear_cache=True)`
+raises if a resumable streaming-input trajectory is parked between turns,
+because `reset_prefix_cache` does not reclaim block-holding waiting sessions.
+This is directly relevant to any proposed trajectory-preserving, clean-cache
+strict-provenance protocol. The failure also leaves the engine paused.
+
+Importantly, [vLLM PR #60764](https://github.com/vllm-project/vllm/pull/60764)
+is **already open to fix this issue**, with its own native scheduler
+regressions and reported CPU validation. Do **not** submit a duplicate patch.
+Our research should treat correct cache-clearing pause across parked
+sessions as an external prerequisite that must pass the *exact* deployed
+version's tests. The adjacent `wait` mode has not been separately proved
+immune in our own setup, so no stronger production claim is made here.
+
+A stronger novelty target would be a measured end-to-end TRL/vLLM
+generation-source admission contract that composes already existing
+native pause, weight-version and checksum APIs with explicit failure
+semantics. That must be demonstrated on genuine serving processes before
+it can be called an implemented systems contribution.
+
 ## Next evidence gate
 
 - Execute genuine 2-client/2-server vLLM requests with a delayed transfer and inspect source-token `weight_versions` plus installed tensors.
