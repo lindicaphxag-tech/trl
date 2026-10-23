@@ -38,3 +38,16 @@ Given fully labeled tokens across a reward group, admit only if every label equa
 This document does **not** claim invention of the token-version span mechanism: it is provided by vLLM. It identifies a **potential cross-library semantic gap** (version commit, turn token-source validation, group-level admission and cache lineage) that is not solved by a scalar request version. Full contribution needs a maintainer-approved backwards-compatible contract, source-level tests in TRL and a real server/learner experiment with mid-request weight sync. At present that integration has **not** been implemented or merged.
 
 Success milestones: maintainer acceptance of a narrow design; native TRL tests on supported vLLM; reproducible actual mixed-version responses; old-vs-strict correctness with drop rate / compute overhead; only then new estimator or on-policy training results.
+
+## Stronger counterexample: all sampling-version spans can be uniform while cached policy state is stale
+
+Consider a single attention head with one previously processed context token `x=(1,0)`. Under old weights `θ0`, its cached value vector is `V_0(x)=(1,0)`. Under new weights `θ1`, a clean new forward pass would compute `V_1(x)=(4,0)`. If `pause(mode=keep,clear_cache=false)` retains the old KV while a newer forward computes the next-token query/logits, the next-token probability differs:
+
+- Fresh θ1 from recomputed context: `softmax([4,0])[0] ≈ 0.982014`.
+- θ1 sampling with old cached context: `softmax([1,0])[0] ≈ 0.731059`.
+
+The server can label the only *newly sampled token* with a complete uniform `weight_versions=[{version:"v1",start:0,end:1}]`, yet the conditional distribution does **not** equal fresh `π_θ1(y|x)`. The vLLM token version may correctly name the weights that sampled the token, but it does not certify its **contextual KV lineage**. This is a theoretical toy counterexample based on the documented `clear_cache=false` semantics, not a reproduction of a real vLLM GPU execution.
+
+**Revised admission contract:** Even complete uniform output-token version labels are not sufficient to claim homogeneous-policy likelihood unless cached context is guaranteed to have been rebuilt from the matching weights, a pinned snapshot is used, or the server supplies an independently verified context cache-epoch guarantee. Our standalone prototype's `group_admission` now fails closed with `reject-cache-unverified` by default; `cache_epoch_verified=True` is *only a caller assertion for design testing*, not an attestation obtainable from existing TRL/vLLM APIs.
+
+The research trade-off is no longer just correct version labels. It is **source-consistent trajectory generation under asynchronous weight publication**, balancing `pause(wait/abort)` or cache reset (performance loss) against a verified pinned-context/lease scheme. Demonstrating a genuinely better throughput/quality trade-off and real training benefit is required for a doctoral-level algorithm claim. The exact numerical toy is in `ci/vllm_stale_kv_context_counterexample.py` and cannot establish novelty relative to the literature.
