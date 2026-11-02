@@ -1128,9 +1128,10 @@ class TestAsyncRolloutWorkerEnvironments(TrlTestCase):
         tool_call = loop.tokenizer.encode(_TOOL_CALL.replace('"t"', '"step"'), add_special_tokens=False)
         final = loop.tokenizer.encode(_FINAL, add_special_tokens=False)
 
-        async def _generate_one_turn(prompt_ids):
+        async def _generate_one_turn(prompt_ids, *, return_request_version=False):
             ids = final if "<tool_response>" in loop.tokenizer.decode(prompt_ids) else tool_call
-            return ids, [-0.1] * len(ids), None, None
+            result = (ids, [-0.1] * len(ids), None, None)
+            return (*result, None) if return_request_version else result
 
         loop._generate_one_turn = _generate_one_turn
         PartialState()
@@ -2251,6 +2252,26 @@ class TestScoreGroupOptionThree(TrlTestCase):
         # (the real worker does this in _child_main before running the loop).
         PartialState()
 
+    def test_lora_request_versions_use_one_conservative_group_admission_label(self):
+        seq_a = TrainingSequence([1, 2, 10], [0, 0, 1], [0, 0, -0.1], [[]] * 3, [{}] * 3, "c0")
+        seq_b = TrainingSequence([1, 2, 20], [0, 0, 1], [0, 0, -0.2], [[]] * 3, [{}] * 3, "c1")
+        group = _group([[seq_a], [seq_b]], completions_ids=[[10], [20]])
+        group.model_version = 0  # stale scheduling-time label must not override actual request identities
+        group.source_version_ranges = [(7, 9), (8, 8)]
+
+        samples = asyncio.run(_rollout_loop(reward_funcs=[two_reward], lora_name="policy")._score_group(group))
+
+        assert [sample.model_version for sample in samples] == [7, 7]
+        assert [sample.metrics["rollout/request_version_span"] for sample in samples] == [2.0, 2.0]
+
+        group.source_version_ranges = [(7, 7)]
+        with pytest.raises(ValueError, match="Incomplete group policy-source records"):
+            asyncio.run(_rollout_loop(reward_funcs=[two_reward], lora_name="policy")._score_group(group))
+
+        group.source_version_ranges = [(9, 7), (8, 8)]
+        with pytest.raises(ValueError, match="Invalid group policy-source version interval"):
+            asyncio.run(_rollout_loop(reward_funcs=[two_reward], lora_name="policy")._score_group(group))
+
     def test_one_advantage_per_conversation_stamped_on_every_row(self):
         # conv 0: one row; conv 1: two rows (a fork).
         seq_a = TrainingSequence([1, 2, 3, 10, 11], [0, 0, 0, 1, 1], [0, 0, 0, -0.1, -0.2], [[]] * 5, [{}] * 5, "c0")
@@ -2606,6 +2627,40 @@ class TestRolloutRequestModel(TrlTestCase):
         assert loop._request_model == "trl-policy-v0"
         loop._model_version_value.value = 3
         assert loop._request_model == "trl-policy-v3"
+
+    def test_generation_payload_and_provenance_share_one_version_snapshot(self, monkeypatch):
+        loop = self._loop("trl-policy")
+        loop._model_version_value.value = 7
+        observed = {}
+
+        async def fake_post(path, payload, timeout):
+            observed["model"] = payload["model"]
+            # Simulate a weight publication after the payload has been constructed but before the response returns.
+            loop._model_version_value.value = 8
+            return {"choices": [{"token_ids": [42], "logprobs": {"token_logprobs": [-0.25]}}]}
+
+        monkeypatch.setattr(loop, "_post", fake_post)
+        result = asyncio.run(loop._generate_one_turn([1, 2], return_request_version=True))
+
+        assert observed["model"] == "trl-policy-v7"
+        assert result == ([42], [-0.25], None, None, 7)
+        assert loop.model_version == 8
+
+    def test_dense_generation_does_not_claim_a_versioned_model_identity(self, monkeypatch):
+        loop = self._loop(None)
+        loop._model_version_value.value = 7
+        observed = {}
+
+        async def fake_post(path, payload, timeout):
+            observed["model"] = payload["model"]
+            loop._model_version_value.value = 8
+            return {"choices": [{"token_ids": [42], "logprobs": {"token_logprobs": [-0.25]}}]}
+
+        monkeypatch.setattr(loop, "_post", fake_post)
+        result = asyncio.run(loop._generate_one_turn([1, 2], return_request_version=True))
+
+        assert observed["model"] == "Qwen/Qwen3-4B"
+        assert result[-1] is None
 
 
 # A LoRA-capable server, as reported by `/server_info`. `max_loras` covers the `max_staleness + 1` servable policy
