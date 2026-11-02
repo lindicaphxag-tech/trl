@@ -180,6 +180,42 @@ def test_loop_owning_capture_rejects_truncated_sampling(make_loop):
         make_loop(top_p=0.95, top_k=512)
 
 
+def test_lora_factory_model_selection_is_atomic_with_session_creation(make_loop):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class VersionedFactory:
+        model = "base"
+
+        def create(self, prompt, *, seed, episode_id):
+            selected_model = self.model
+            if selected_model == "policy-v7":
+                entered.set()
+                assert release.wait(timeout=2)
+            return selected_model
+
+    factory = VersionedFactory()
+    loop = make_loop(factory, lora_name="policy")
+    results = {}
+
+    first = threading.Thread(
+        target=lambda: results.setdefault(7, loop._create_session([], 7, "rollout-7", 7))
+    )
+    second = threading.Thread(
+        target=lambda: results.setdefault(8, loop._create_session([], 8, "rollout-8", 8))
+    )
+    first.start()
+    assert entered.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)  # let the second thread contend for the factory while v7 creation is blocked
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert results == {7: "policy-v7", 8: "policy-v8"}
+
+
 @pytest.mark.parametrize("temperature", [0.3, 0.8, 1.2])
 def test_worker_supplies_factory_sampling_before_session_start(make_loop, monkeypatch, temperature):
     harness = pytest.importorskip("harbor_env.harness")
