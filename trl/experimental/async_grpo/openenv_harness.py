@@ -44,6 +44,7 @@ from .async_rollout_worker import (
     TurnRecord,
     _AsyncRolloutLoop,
     _chain_to_sequences,
+    _request_version_range,
 )
 
 
@@ -101,7 +102,7 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
     _provides_rollout_reward = True
 
     # Unscorable rollouts are excluded from the group baseline.
-    _EMPTY_ROLLOUT = ([], [], [], 0, 0, None)
+    _EMPTY_ROLLOUT = ([], [], [], 0, 0, None, None)
 
     def __init__(
         self,
@@ -219,10 +220,11 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
         rollout_id = uuid.uuid4().hex
         # Every generation in a group must select the same task.
         seed = group_id
+        session_request_version = self.model_version if self.lora_name is not None else None
         if self.lora_name is not None:
             # The agent sends the factory's model name on every call, and in vLLM's API an adapter is a model name:
-            # point each new session at the policy version published now.
-            self._factory.model = self._request_model
+            # pin this session to the exact version observed before the session is created.
+            self._factory.model = self._request_model_for_version(session_request_version)
         try:
             session = self._factory.create(prompt, seed=seed, episode_id=rollout_id)
         except Exception:
@@ -268,7 +270,7 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
                     timed_out = True
                 try:
                     captured = loop_session.fetch_training_trace()
-                    turns = _turns_from_training_trace(captured)
+                    turns = _turns_from_training_trace(captured, request_version=session_request_version)
                     entries = captured.to_trace_entries()
                     trace = entries
                 except (ValueError, TypeError, KeyError) as exc:
@@ -314,7 +316,18 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
             )
             if self._rollout_reward_fn is not None and env_reward is not None:
                 metrics["correctness"] = env_reward
-            return (completion, completion_ids, sequences, tool_call_count, tool_failure_count, reward), metrics
+            return (
+                (
+                    completion,
+                    completion_ids,
+                    sequences,
+                    tool_call_count,
+                    tool_failure_count,
+                    reward,
+                    _request_version_range(turns),
+                ),
+                metrics,
+            )
         except CaptureContractError:
             raise
         except Exception:
@@ -346,8 +359,8 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
             **self.chat_template_kwargs,
         )
         # ModelStep is sync on a pool thread; bridge the async vLLM POST onto the loop's event loop.
-        turn_ids, logprobs, sampling_mask, sampler_logprobs = asyncio.run_coroutine_threadsafe(
-            self._generate_one_turn(prompt_ids), self._loop
+        turn_ids, logprobs, sampling_mask, sampler_logprobs, request_version = asyncio.run_coroutine_threadsafe(
+            self._generate_one_turn(prompt_ids, return_request_version=True), self._loop
         ).result()
         turns.append(
             TurnRecord(
@@ -356,6 +369,7 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
                 logprobs,
                 output_sampling_mask=sampling_mask,
                 output_sampler_logprobs=sampler_logprobs,
+                request_version=request_version,
             )
         )
         response = _msg_to_llm_response(parse_response(self.tokenizer, turn_ids, prefix=prompt_ids, tools=tools))
@@ -363,7 +377,9 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
         return ModelStepResult(response=response, prompt_ids=prompt_ids, completion_ids=turn_ids, logprobs=logprobs)
 
 
-def _turns_from_training_trace(trace: TrainingTrace) -> list[TurnRecord]:
+def _turns_from_training_trace(
+    trace: TrainingTrace, *, request_version: int | None = None
+) -> list[TurnRecord]:
     """Map OpenEnv's validated full masks to TRL's completion masks."""
     return [
         TurnRecord(
@@ -371,6 +387,7 @@ def _turns_from_training_trace(trace: TrainingTrace) -> list[TurnRecord]:
             list(turn.completion_token_ids),
             list(turn.per_token_logps),
             list(turn.loss_mask[len(turn.prompt_token_ids) :]),
+            request_version=request_version,
         )
         for turn in trace.turns
     ]
