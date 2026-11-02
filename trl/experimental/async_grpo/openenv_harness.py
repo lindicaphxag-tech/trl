@@ -18,6 +18,7 @@ import asyncio
 import functools
 import itertools
 import json
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -144,6 +145,9 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
         )
         self._rollout_reward_fn = rollout_reward_fn
         self.reward_func_names.append("harness_reward")
+        # The factory stores its model name as mutable shared state. Serialize setting it with session creation so
+        # concurrent rollouts cannot create a session under another rollout's versioned adapter.
+        self._factory_model_lock = threading.Lock()
 
         self._session_pool = ThreadPoolExecutor(
             max_workers=max(1, self.max_inflight_tasks), thread_name_prefix="harness-session"
@@ -221,12 +225,8 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
         # Every generation in a group must select the same task.
         seed = group_id
         session_request_version = self.model_version if self.lora_name is not None else None
-        if self.lora_name is not None:
-            # The agent sends the factory's model name on every call, and in vLLM's API an adapter is a model name:
-            # pin this session to the exact version observed before the session is created.
-            self._factory.model = self._request_model_for_version(session_request_version)
         try:
-            session = self._factory.create(prompt, seed=seed, episode_id=rollout_id)
+            session = self._create_session(prompt, seed, rollout_id, session_request_version)
         except Exception:
             logger.warning("harness session create failed; scoring rollout as unscorable", exc_info=True)
             return self._EMPTY_ROLLOUT, None
@@ -339,6 +339,13 @@ class _HarnessRolloutLoop(_AsyncRolloutLoop):
                 session.close()
             except Exception:
                 logger.warning("harness session close failed", exc_info=True)
+
+    def _create_session(self, prompt, seed, episode_id, request_version):
+        if self.lora_name is None:
+            return self._factory.create(prompt, seed=seed, episode_id=episode_id)
+        with self._factory_model_lock:
+            self._factory.model = self._request_model_for_version(request_version)
+            return self._factory.create(prompt, seed=seed, episode_id=episode_id)
 
     def _sample_turn(
         self, turns: list[TurnRecord], turn_times: list[tuple[float, float, list[str]]], messages, tools, sampling
