@@ -188,26 +188,33 @@ def test_lora_factory_model_selection_is_atomic_with_session_creation(make_loop)
         model = "base"
 
         def create(self, prompt, *, seed, episode_id):
-            selected_model = self.model
-            if selected_model == "policy-v7":
+            if self.model == "policy-v7":
                 entered.set()
                 assert release.wait(timeout=2)
-            return selected_model
+            # Read the mutable factory field after the wait: without serialization, v8 can overwrite v7 here.
+            return self.model
 
     factory = VersionedFactory()
     loop = make_loop(factory, lora_name="policy")
     results = {}
+    second_started = threading.Event()
+    second_done = threading.Event()
 
-    first = threading.Thread(
-        target=lambda: results.setdefault(7, loop._create_session([], 7, "rollout-7", 7))
-    )
-    second = threading.Thread(
-        target=lambda: results.setdefault(8, loop._create_session([], 8, "rollout-8", 8))
-    )
+    def create_v7():
+        results[7] = loop._create_session([], 7, "rollout-7", 7)
+
+    def create_v8():
+        second_started.set()
+        results[8] = loop._create_session([], 8, "rollout-8", 8)
+        second_done.set()
+
+    first = threading.Thread(target=create_v7)
+    second = threading.Thread(target=create_v8)
     first.start()
     assert entered.wait(timeout=2)
     second.start()
-    time.sleep(0.05)  # let the second thread contend for the factory while v7 creation is blocked
+    assert second_started.wait(timeout=2)
+    assert not second_done.wait(timeout=0.05)
     release.set()
     first.join(timeout=2)
     second.join(timeout=2)
